@@ -1,0 +1,535 @@
+OpenIdiom — Headless Knowledge Base CLI with AI Integration
+
+ Context
+
+ Obsidian is a powerful knowledge management tool, but it's closed-source, GUI-bound, and lacks native AI integration. Existing open-source alternatives (Logseq, Joplin) all focus on
+ building another GUI editor — solving the wrong problem. The real value in a Markdown knowledge base isn't the editor (VS Code, Neovim, and Obsidian itself already exist), it's the
+ graph intelligence and AI layer on top of plain files.
+
+ OpenIdiom is a Rust CLI tool that treats a folder of Markdown files as a knowledge base. It indexes wikilinks, tags, and frontmatter; exposes a query interface; and provides an AI layer
+  for semantic search, summarization, and link discovery. It's editor-agnostic, local-first, and designed to integrate with shell workflows and AI assistants (including Claude Code).
+
+ Target users: Developers, writers, and knowledge workers who already have an editor they like and want programmable intelligence over their notes.
+
+ ---
+ Architecture Overview
+
+ openidiom/
+ ├── Cargo.toml
+ ├── src/
+ │   ├── main.rs                  # CLI entrypoint (clap)
+ │   ├── cli/                     # Command definitions
+ │   │   ├── mod.rs
+ │   │   ├── init.rs              # `oi init`
+ │   │   ├── index.rs             # `oi index`
+ │   │   ├── query.rs             # `oi query`
+ │   │   ├── graph.rs             # `oi graph`
+ │   │   ├── daily.rs             # `oi daily`
+ │   │   ├── check.rs             # `oi check` (orphans, broken links)
+ │   │   └── ai.rs                # `oi ai *` subcommands
+ │   ├── core/                    # Core domain logic
+ │   │   ├── mod.rs
+ │   │   ├── vault.rs             # Vault discovery & config
+ │   │   ├── parser.rs            # Markdown parsing (frontmatter, wikilinks, tags)
+ │   │   ├── index.rs             # Indexing engine (file walk → SQLite)
+ │   │   ├── query.rs             # Query engine over the index
+ │   │   ├── graph.rs             # Graph construction & export
+ │   │   └── daily.rs             # Daily note logic
+ │   ├── ai/                      # AI integration layer
+ │   │   ├── mod.rs
+ │   │   ├── provider.rs          # Trait: LlmProvider
+ │   │   ├── embedder.rs          # Trait: Embedder
+ │   │   ├── providers/
+ │   │   │   ├── claude.rs        # Anthropic Claude implementation
+ │   │   │   ├── openai.rs        # OpenAI-compatible implementation
+ │   │   │   └── ollama.rs        # Local Ollama implementation
+ │   │   ├── semantic.rs          # Vector search over embeddings
+ │   │   ├── commands.rs          # AI command orchestration (ask, summarize, connect)
+ │   │   └── context.rs           # Note context assembly for LLM prompts
+ │   ├── db/                      # SQLite persistence
+ │   │   ├── mod.rs
+ │   │   ├── schema.rs            # Table definitions & migrations
+ │   │   └── queries.rs           # Prepared queries
+ │   └── output/                  # Output formatting
+ │       ├── mod.rs
+ │       ├── json.rs
+ │       ├── table.rs
+ │       └── dot.rs               # Graphviz DOT format
+ ├── tests/
+ │   ├── fixtures/                # Sample vaults for testing
+ │   │   ├── basic_vault/
+ │   │   └── large_vault/
+ │   └── integration/
+ │       ├── test_init.rs
+ │       ├── test_index.rs
+ │       ├── test_query.rs
+ │       ├── test_graph.rs
+ │       └── test_ai.rs
+ └── README.md
+
+ ---
+ Rust Crate Dependencies
+
+ [dependencies]
+ clap = { version = "4", features = ["derive"] }    # CLI framework
+ pulldown-cmark = "0.10"                             # Markdown parsing
+ serde = { version = "1", features = ["derive"] }    # Serialization
+ serde_json = "1"                                    # JSON output
+ serde_yaml = "0.9"                                  # YAML frontmatter
+ rusqlite = { version = "0.31", features = ["bundled"] }  # SQLite
+ walkdir = "2"                                       # Directory traversal
+ regex = "1"                                         # Wikilink/tag extraction
+ chrono = "0.4"                                      # Date handling (daily notes)
+ tokio = { version = "1", features = ["full"] }      # Async runtime (for AI calls)
+ reqwest = { version = "0.12", features = ["json"] } # HTTP client (AI APIs)
+ comfy-table = "7"                                   # Table output formatting
+ colored = "2"                                       # Terminal colors
+ directories = "5"                                   # XDG/platform config dirs
+ toml = "0.8"                                        # Config file parsing
+ thiserror = "1"                                     # Error types
+
+ [dev-dependencies]
+ tempfile = "3"                                      # Temp dirs for tests
+ assert_cmd = "2"                                    # CLI integration testing
+ predicates = "3"                                    # Test assertions
+
+ ---
+ Phase 1 — Core CLI & Vault Indexing
+
+ Goal: A working CLI that can initialize a vault, scan Markdown files, parse wikilinks/tags/frontmatter, and store everything in a SQLite index.
+
+ 1.1 Project scaffolding
+
+ - cargo init openidiom
+ - Set up Cargo.toml with dependencies listed above
+ - Set up src/main.rs with clap derive-based CLI skeleton
+ - Define all top-level subcommands (even if unimplemented — use todo!())
+
+ 1.2 Vault initialization (oi init)
+
+ - Create .openidiom/ directory in current folder
+ - Create .openidiom/config.toml with defaults:
+ [vault]
+ name = "my-vault"
+ daily_folder = "daily"
+ daily_format = "%Y-%m-%d"
+ ignore = [".openidiom", ".git", "node_modules", ".obsidian"]
+
+ [ai]
+ provider = "claude"  # claude | openai | ollama
+ # API keys read from env: ANTHROPIC_API_KEY, OPENAI_API_KEY
+ # ollama_url = "http://localhost:11434"
+ embedding_model = "text-embedding-3-small"  # or provider-specific
+ - Create .openidiom/index.db (empty SQLite database)
+ - Print confirmation
+
+ 1.3 Markdown parser (core/parser.rs)
+
+ - Parse YAML frontmatter (between --- delimiters) into serde_yaml::Value
+ - Extract wikilinks: [[target]] and [[target|alias]]
+ - Extract tags: #tag and nested #tag/subtag (from both body and frontmatter)
+ - Extract headings (for section-level linking later)
+ - Return a ParsedNote struct:
+ pub struct ParsedNote {
+     pub path: PathBuf,
+     pub title: String,          // filename without .md, or frontmatter title
+     pub frontmatter: Option<serde_yaml::Value>,
+     pub wikilinks: Vec<WikiLink>,
+     pub tags: Vec<String>,
+     pub headings: Vec<Heading>,
+     pub word_count: usize,
+     pub raw_content: String,
+ }
+
+ pub struct WikiLink {
+     pub target: String,        // the note being linked to
+     pub alias: Option<String>, // display text
+     pub line: usize,
+ }
+
+ 1.4 SQLite schema (db/schema.rs)
+
+ CREATE TABLE notes (
+     id INTEGER PRIMARY KEY,
+     path TEXT UNIQUE NOT NULL,
+     title TEXT NOT NULL,
+     word_count INTEGER,
+     frontmatter_json TEXT,     -- frontmatter stored as JSON
+     content_hash TEXT,         -- for incremental re-indexing
+     indexed_at TEXT NOT NULL
+ );
+
+ CREATE TABLE links (
+     id INTEGER PRIMARY KEY,
+     source_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+     target_title TEXT NOT NULL, -- resolved later
+     target_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+     alias TEXT,
+     line INTEGER
+ );
+
+ CREATE TABLE tags (
+     id INTEGER PRIMARY KEY,
+     note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+     tag TEXT NOT NULL
+ );
+
+ CREATE TABLE headings (
+     id INTEGER PRIMARY KEY,
+     note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+     text TEXT NOT NULL,
+     level INTEGER NOT NULL
+ );
+
+ -- For AI phase
+ CREATE TABLE embeddings (
+     id INTEGER PRIMARY KEY,
+     note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+     chunk_index INTEGER,
+     chunk_text TEXT,
+     embedding BLOB,            -- f32 vector stored as bytes
+     model TEXT
+ );
+
+ CREATE INDEX idx_tags_tag ON tags(tag);
+ CREATE INDEX idx_links_source ON links(source_id);
+ CREATE INDEX idx_links_target ON links(target_id);
+ CREATE INDEX idx_notes_title ON notes(title);
+
+ 1.5 Indexer (core/index.rs)
+
+ - Walk vault directory using walkdir, respecting ignore patterns from config
+ - For each .md file:
+   - Compute content hash (SHA-256 of file contents)
+   - Skip if hash matches existing DB entry (incremental indexing)
+   - Parse with core/parser.rs
+   - Upsert into notes, links, tags, headings tables
+ - After all files indexed, resolve links.target_id by matching links.target_title → notes.title
+ - Print summary: Indexed 142 notes, 387 links, 95 tags (12 new, 3 updated)
+
+ 1.6 oi index command
+
+ - Load vault config from .openidiom/config.toml
+ - Run indexer
+ - Flag: --force to re-index everything (ignore content hashes)
+ - Flag: --stats to print detailed stats
+
+ Verification — Phase 1
+
+ 1. cargo build succeeds
+ 2. oi init in a test folder creates .openidiom/ with config and empty DB
+ 3. oi index on a folder with 5-10 sample .md files (including wikilinks, tags, frontmatter) correctly populates the SQLite database
+ 4. Write integration tests using tempfile + assert_cmd:
+   - test_init_creates_config
+   - test_index_parses_wikilinks
+   - test_index_parses_tags
+   - test_index_parses_frontmatter
+   - test_index_incremental (second run skips unchanged files)
+   - test_index_resolves_links
+
+ ---
+ Phase 2 — Query, Graph & Daily Notes
+
+ Goal: Query the index by tags/links/frontmatter, export the graph, and manage daily notes.
+
+ 2.1 Query engine (core/query.rs, cli/query.rs)
+
+ Syntax for oi query:
+ oi query "tag:#rust"                    # notes with tag #rust
+ oi query "tag:#rust AND tag:#async"     # intersection
+ oi query "link:api-design"             # notes that link to api-design
+ oi query "backlink:api-design"         # notes that api-design links to
+ oi query "title:auth"                  # title contains "auth"
+ oi query "front:status=draft"          # frontmatter field match
+ oi query "words>1000"                  # word count filter
+ oi query "orphan:true"                 # notes with no inbound or outbound links
+
+ Implementation:
+ - Parse query string into a filter AST (keep it simple — no need for a full parser, a basic recursive descent or even split-on-AND/OR is fine for v1)
+ - Translate filters to SQL WHERE clauses with JOINs
+ - Output: table (default), JSON (--json), or just paths (--paths)
+
+ 2.2 Check command (cli/check.rs)
+
+ oi check                    # run all checks
+ oi check --orphans          # notes with no links in or out
+ oi check --broken-links     # wikilinks pointing to non-existent notes
+ oi check --dead-tags        # tags used only once
+ - Queries the index for each check type
+ - Outputs a report with file paths and line numbers
+ - Exit code 1 if any issues found (useful in CI/pre-commit hooks)
+
+ 2.3 Graph export (core/graph.rs, cli/graph.rs)
+
+ oi graph                    # full graph as JSON adjacency list
+ oi graph --format dot       # Graphviz DOT format
+ oi graph --format json      # JSON (default)
+ oi graph --filter "tag:#project-x"  # subgraph
+ oi graph --depth 2 --root "api-design"  # ego graph, 2 hops from root
+
+ JSON output shape:
+ {
+   "nodes": [
+     { "id": "api-design", "path": "notes/api-design.md", "tags": ["#arch"], "word_count": 450 }
+   ],
+   "edges": [
+     { "source": "api-design", "target": "auth-middleware", "line": 23 }
+   ]
+ }
+
+ DOT output for piping to dot -Tsvg -o graph.svg.
+
+ 2.4 Daily notes (cli/daily.rs)
+
+ oi daily                    # create/print today's note path
+ oi daily --open             # create and print path (user pipes to editor)
+ oi daily --yesterday
+ oi daily --date 2026-03-25
+ oi daily --template path/to/template.md
+ - Creates {daily_folder}/{daily_format}.md if it doesn't exist
+ - If a template is configured, copies template content into new daily note
+ - Prints the path to stdout (so users can do nvim $(oi daily))
+
+ Verification — Phase 2
+
+ 1. oi query "tag:#test" returns correct notes from the fixture vault
+ 2. oi query "orphan:true" finds notes with no links
+ 3. oi check --broken-links detects a wikilink to a non-existent note
+ 4. oi graph --format dot | dot -Tsvg produces a valid SVG
+ 5. oi graph --format json output is valid JSON matching the schema
+ 6. oi daily creates a dated note and returns the path
+ 7. Integration tests:
+   - test_query_by_tag
+   - test_query_by_link
+   - test_query_frontmatter
+   - test_check_broken_links
+   - test_check_orphans
+   - test_graph_json_output
+   - test_graph_dot_output
+   - test_daily_creates_note
+   - test_daily_idempotent
+
+ ---
+ Phase 3 — AI Integration Layer
+
+ Goal: Pluggable AI backend with embedding-based semantic search and LLM-powered commands.
+
+ 3.1 Provider traits (ai/provider.rs, ai/embedder.rs)
+
+ #[async_trait]
+ pub trait LlmProvider: Send + Sync {
+     async fn complete(&self, prompt: &str, system: Option<&str>) -> Result<String>;
+     fn name(&self) -> &str;
+ }
+
+ #[async_trait]
+ pub trait Embedder: Send + Sync {
+     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+     fn dimension(&self) -> usize;
+     fn model_name(&self) -> &str;
+ }
+
+ 3.2 Provider implementations (ai/providers/)
+
+ Claude (claude.rs):
+ - Uses reqwest to call https://api.anthropic.com/v1/messages
+ - Reads ANTHROPIC_API_KEY from env
+ - Model configurable in config.toml (default: claude-sonnet-4-6)
+ - For embeddings: delegate to Voyage AI or fall back to OpenAI embeddings (Claude doesn't have a native embedding API — document this clearly)
+
+ OpenAI-compatible (openai.rs):
+ - Calls /v1/chat/completions and /v1/embeddings
+ - Reads OPENAI_API_KEY from env
+ - base_url configurable (so it works with any OpenAI-compatible API)
+
+ Ollama (ollama.rs):
+ - Calls local Ollama REST API (/api/generate, /api/embeddings)
+ - Default URL http://localhost:11434, configurable
+ - No API key needed
+
+ Provider factory:
+ - Read ai.provider from config, return the right Box<dyn LlmProvider> + Box<dyn Embedder>
+ - Config:
+ [ai]
+ provider = "claude"          # claude | openai | ollama
+ model = "claude-sonnet-4-6"  # LLM model for completions
+ embedding_provider = "openai"  # can differ from completion provider
+ embedding_model = "text-embedding-3-small"
+ # base_url = "https://api.openai.com/v1"   # for openai-compatible
+ # ollama_url = "http://localhost:11434"
+
+ 3.3 Embedding indexer (ai/semantic.rs)
+
+ oi ai index                 # embed all notes, store in SQLite
+ oi ai index --force         # re-embed everything
+
+ - Chunk notes into ~500 token segments (split on headings or paragraphs)
+ - Batch embed chunks (respect rate limits — configurable batch size)
+ - Store embeddings as BLOB (f32 bytes) in embeddings table
+ - Incremental: skip notes whose content_hash hasn't changed
+
+ Vector search (no external vector DB needed for v1):
+ - Load relevant embeddings from SQLite
+ - Compute cosine similarity in Rust (it's fast enough for <50k chunks)
+ - Return top-K results
+ - Future optimization: add HNSW index via usearch crate if needed
+
+ 3.4 AI commands (ai/commands.rs, cli/ai.rs)
+
+ # Semantic search over notes
+ oi ai search "authentication patterns"
+ # → Returns top 5 notes with relevance scores and excerpts
+
+ # Ask a question, grounded in your notes
+ oi ai ask "What are our conventions for error handling?"
+ # → LLM answers using retrieved note context (RAG)
+
+ # Suggest connections between a note and the rest of the vault
+ oi ai connect api-design
+ # → "api-design.md could link to: error-handling.md (both discuss middleware),
+ #    auth-patterns.md (shared context on request lifecycle)"
+
+ # Summarize a set of notes
+ oi ai summarize --tag "#meeting-notes"
+ # → Generates a summary across all matching notes
+
+ # Generate a draft note from context
+ oi ai draft "Compare our auth approaches" --context "#auth"
+ # → Creates a new .md file with AI-generated content, linked to source notes
+
+ RAG implementation (ai/context.rs):
+ 1. For ask/draft: embed the query → vector search → retrieve top-K chunks
+ 2. Assemble a prompt with the retrieved chunks as context
+ 3. System prompt instructs the LLM to only use provided context, cite sources by note title
+ 4. Return the response with source attribution
+
+ 3.5 Config for AI (config.toml additions)
+
+ [ai]
+ provider = "claude"
+ model = "claude-sonnet-4-6"
+ embedding_provider = "openai"
+ embedding_model = "text-embedding-3-small"
+ chunk_size = 500           # tokens per chunk
+ search_top_k = 10          # default results for semantic search
+ context_top_k = 5          # chunks to include in RAG context
+ batch_size = 50            # embeddings per API call
+
+ Verification — Phase 3
+
+ 1. oi ai index processes a fixture vault and populates the embeddings table
+ 2. oi ai search "test query" returns ranked results
+ 3. oi ai ask "question" returns a grounded answer with source citations
+ 4. oi ai connect <note> suggests plausible links
+ 5. Test with --provider ollama against a local Ollama instance (manual test)
+ 6. Integration tests (mock HTTP responses for AI providers):
+   - test_embed_and_search
+   - test_ask_includes_context
+   - test_provider_factory_claude
+   - test_provider_factory_openai
+   - test_provider_factory_ollama
+   - test_incremental_embedding
+
+ ---
+ Phase 4 — Polish & Distribution
+
+ Goal: Make it pleasant to use and easy to install.
+
+ 4.1 Output formatting
+
+ - All commands support --json for machine-readable output (piping to jq, Claude Code, etc.)
+ - Default human-readable output with comfy-table and colored
+ - --quiet flag for scripting (just paths or exit codes)
+
+ 4.2 Pipe-friendliness
+
+ # Compose with standard tools
+ oi query "tag:#todo" --paths | xargs nvim
+ oi graph --format json | jq '.nodes | length'
+ oi check --broken-links --json | jq '.[].path'
+ oi ai search "auth" --json | jq '.[0].path' | xargs cat
+
+ 4.3 Shell completions
+
+ - Use clap's built-in completion generation
+ - oi completions bash/zsh/fish > completion.sh
+
+ 4.4 Error handling
+
+ - Use thiserror for typed errors
+ - Friendly error messages: "No vault found. Run oi init first." not "Error: config.toml not found"
+ - Exit codes: 0 = success, 1 = check found issues, 2 = user error, 3 = system/API error
+
+ 4.5 CI / Release
+
+ - GitHub Actions workflow:
+   - cargo test on push
+   - cargo clippy + cargo fmt --check
+   - Cross-compile releases for Linux (x86_64, aarch64), macOS (x86_64, aarch64), Windows (x86_64)
+   - Publish binaries to GitHub Releases
+ - Homebrew formula (future)
+ - cargo install openidiom (publish to crates.io)
+
+ 4.6 README
+
+ - Quick start with examples
+ - Full command reference
+ - Configuration reference
+ - AI setup guide per provider
+
+ Verification — Phase 4
+
+ 1. All commands produce valid JSON with --json
+ 2. cargo clippy passes with no warnings
+ 3. cargo test passes all tests
+ 4. Cross-compilation succeeds for at least Linux x86_64 and macOS aarch64
+ 5. Shell completions generate without errors
+
+ ---
+ Implementation Order & Priority
+
+ ┌───────┬─────────┬───────────────────────────────────────────────┬──────────────┐
+ │ Order │  Phase  │                  Deliverable                  │   Priority   │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 1     │ 1.1     │ Project scaffolding, CLI skeleton             │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 2     │ 1.2     │ oi init                                       │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 3     │ 1.3     │ Markdown parser                               │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 4     │ 1.4     │ SQLite schema                                 │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 5     │ 1.5-1.6 │ Indexer + oi index                            │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 6     │ 2.1     │ oi query                                      │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 7     │ 2.2     │ oi check                                      │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 8     │ 2.3     │ oi graph                                      │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 9     │ 2.4     │ oi daily                                      │ Nice to have │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 10    │ 3.1-3.2 │ AI provider traits + implementations          │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 11    │ 3.3     │ Embedding indexer + vector search             │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 12    │ 3.4     │ AI commands (search, ask, connect, summarize) │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 13    │ 4.1-4.4 │ Output polish, completions, error handling    │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
+ │ 14    │ 4.5-4.6 │ CI, releases, README                          │ Should have  │
+ └───────┴─────────┴───────────────────────────────────────────────┴──────────────┘
+
+ ---
+ Key Design Decisions
+
+ 1. SQLite over in-memory index — Persists between runs, enables incremental indexing, fast enough for 100k+ notes. No external database to manage.
+ 2. No custom vector DB — Cosine similarity in Rust over SQLite-stored vectors is fast enough for vaults up to ~50k chunks. HNSW can be added later if needed via the usearch crate.
+ 3. Pluggable AI from day one — The trait abstraction is minimal overhead and avoids a painful refactor later. Claude as default, OpenAI-compatible for flexibility, Ollama for
+ local/private use.
+ 4. Embedding provider separate from completion provider — Users may want Claude for completions but OpenAI for embeddings (since Claude doesn't have a native embedding API). Config
+ supports this.
+ 5. CLI binary name: oi — Short, fast to type, stands for OpenIdiom. Configured via [[bin]] in Cargo.toml.
+ 6. No watch mode in v1 — oi index is explicit. A --watch flag can be added later using notify crate. Keep it simple.
+ 7. Obsidian-compatible — Reads standard [[wikilinks]], #tags, and YAML frontmatter. Users can run OpenIdiom alongside Obsidian on the same vault. The .openidiom/ folder is
+ self-contained.
