@@ -7,7 +7,7 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  graph intelligence and AI layer on top of plain files.
 
  OpenIdiom is a Rust CLI tool that treats a folder of Markdown files as a knowledge base. It indexes wikilinks, tags, and frontmatter; exposes a query interface; and provides an AI layer
-  for semantic search, summarization, and link discovery. It's editor-agnostic, local-first, and designed to integrate with shell workflows and AI assistants (including Claude Code).
+ for semantic search, summarization, and link discovery. It's editor-agnostic, local-first, and designed to integrate with shell workflows and AI assistants (including Claude Code).
 
  Target users: Developers, writers, and knowledge workers who already have an editor they like and want programmable intelligence over their notes.
 
@@ -23,33 +23,42 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  │   │   ├── init.rs              # `oi init`
  │   │   ├── index.rs             # `oi index`
  │   │   ├── query.rs             # `oi query`
+ │   │   ├── search.rs            # `oi search` (FTS5 keyword search)
  │   │   ├── graph.rs             # `oi graph`
  │   │   ├── daily.rs             # `oi daily`
  │   │   ├── check.rs             # `oi check` (orphans, broken links)
+ │   │   ├── status.rs            # `oi status` (vault info & health)
  │   │   └── ai.rs                # `oi ai *` subcommands
  │   ├── core/                    # Core domain logic
  │   │   ├── mod.rs
- │   │   ├── vault.rs             # Vault discovery & config
- │   │   ├── parser.rs            # Markdown parsing (frontmatter, wikilinks, tags)
- │   │   ├── index.rs             # Indexing engine (file walk → SQLite)
+ │   │   ├── vault.rs             # Vault discovery & config (with validation)
+ │   │   ├── parser.rs            # Note parsing (frontmatter, wikilinks, tags, headings)
+ │   │   ├── index.rs             # Indexing engine (file walk → SQLite + FTS5)
  │   │   ├── query.rs             # Query engine over the index
+ │   │   ├── search.rs            # FTS5 keyword search engine
+ │   │   ├── link_resolver.rs     # Wikilink → note resolution (handles ambiguity)
  │   │   ├── graph.rs             # Graph construction & export
  │   │   └── daily.rs             # Daily note logic
  │   ├── ai/                      # AI integration layer
  │   │   ├── mod.rs
- │   │   ├── provider.rs          # Trait: LlmProvider
+ │   │   ├── provider.rs          # Trait: LlmProvider (with streaming support)
  │   │   ├── embedder.rs          # Trait: Embedder
  │   │   ├── providers/
  │   │   │   ├── claude.rs        # Anthropic Claude implementation
  │   │   │   ├── openai.rs        # OpenAI-compatible implementation
  │   │   │   └── ollama.rs        # Local Ollama implementation
  │   │   ├── semantic.rs          # Vector search over embeddings
+ │   │   ├── cost.rs              # Token counting & cost estimation
  │   │   ├── commands.rs          # AI command orchestration (ask, summarize, connect)
  │   │   └── context.rs           # Note context assembly for LLM prompts
  │   ├── db/                      # SQLite persistence
  │   │   ├── mod.rs
  │   │   ├── schema.rs            # Table definitions & migrations
  │   │   └── queries.rs           # Prepared queries
+ │   ├── mcp/                     # MCP server layer (AI-tool-agnostic)
+ │   │   ├── mod.rs
+ │   │   ├── server.rs            # MCP protocol server
+ │   │   └── tools.rs             # Exposed vault tools for AI assistants
  │   └── output/                  # Output formatting
  │       ├── mod.rs
  │       ├── json.rs
@@ -63,6 +72,7 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  │       ├── test_init.rs
  │       ├── test_index.rs
  │       ├── test_query.rs
+ │       ├── test_search.rs
  │       ├── test_graph.rs
  │       └── test_ai.rs
  └── README.md
@@ -72,31 +82,77 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
 
  [dependencies]
  clap = { version = "4", features = ["derive"] }    # CLI framework
- pulldown-cmark = "0.10"                             # Markdown parsing
+ pulldown-cmark = "0.12"                             # Heading extraction only
+ gray_matter = "0.2"                                 # Frontmatter parsing (YAML/TOML/JSON)
  serde = { version = "1", features = ["derive"] }    # Serialization
  serde_json = "1"                                    # JSON output
- serde_yaml = "0.9"                                  # YAML frontmatter
- rusqlite = { version = "0.31", features = ["bundled"] }  # SQLite
+ serde_yml = "0.0.12"                                # YAML frontmatter deserialization (maintained fork of serde_yaml)
+ rusqlite = { version = "0.31", features = ["bundled"] }  # SQLite (includes FTS5)
  walkdir = "2"                                       # Directory traversal
  regex = "1"                                         # Wikilink/tag extraction
  chrono = "0.4"                                      # Date handling (daily notes)
  tokio = { version = "1", features = ["full"] }      # Async runtime (for AI calls)
- reqwest = { version = "0.12", features = ["json"] } # HTTP client (AI APIs)
+ reqwest = { version = "0.12", features = ["json", "stream"] }  # HTTP client (AI APIs, with streaming)
  comfy-table = "7"                                   # Table output formatting
  colored = "2"                                       # Terminal colors
  directories = "5"                                   # XDG/platform config dirs
  toml = "0.8"                                        # Config file parsing
- thiserror = "1"                                     # Error types
+ thiserror = "2"                                     # Library-level error types
+ anyhow = "1"                                        # Application-level error propagation
+ sha2 = "0.10"                                       # Content hashing for incremental indexing
+ backoff = { version = "0.4", features = ["tokio"] } # Exponential retry/backoff for API calls
+ tokio-stream = "0.1"                                # Streaming support for AI responses
+ futures = "0.3"                                     # Stream utilities
 
  [dev-dependencies]
  tempfile = "3"                                      # Temp dirs for tests
  assert_cmd = "2"                                    # CLI integration testing
  predicates = "3"                                    # Test assertions
 
+ NOTE: No `async_trait` crate — using native async traits (Rust 1.75+).
+ NOTE: `serde_yml` replaces deprecated `serde_yaml`.
+ NOTE: `pulldown-cmark` used only for heading extraction; wikilinks and tags
+       parsed via regex (they are not part of CommonMark spec).
+ NOTE: `gray_matter` handles frontmatter stripping (YAML between --- delimiters)
+       before content is passed to pulldown-cmark or regex extraction.
+
+ ---
+ Critical Design Decision: Wikilink Resolution Strategy
+
+ Obsidian resolves [[foo]] by finding any note named foo.md anywhere in the vault,
+ with shortest-path-wins for ambiguity. OpenIdiom must handle this correctly.
+
+ Resolution rules (Obsidian-compatible):
+ 1. Exact filename match (case-insensitive): [[foo]] → notes/foo.md
+ 2. If multiple matches: shortest relative path wins (same as Obsidian)
+ 3. If [[path/to/foo]]: treat as explicit relative path, match exactly
+ 4. If still ambiguous: log a warning, pick first alphabetically, store all candidates
+ 5. oi check --ambiguous-links reports all ambiguous resolutions
+
+ Implementation: core/link_resolver.rs builds a title→path lookup table during
+ indexing. The table maps lowercase titles to Vec<PathBuf> (multiple matches possible).
+ Resolution logic runs after the full file walk, so all notes are known.
+
+ ---
+ Critical Design Decision: Parser Strategy
+
+ Wikilinks ([[target]], [[target|alias]]) and tags (#tag, #tag/subtag) are NOT part
+ of the CommonMark spec. pulldown-cmark will not parse them — it sees them as plain text.
+
+ Parser pipeline:
+ 1. gray_matter: split file into frontmatter (YAML) + body content
+ 2. regex: extract wikilinks and tags from body content
+ 3. pulldown-cmark: extract headings (H1-H6) from body content
+ 4. Combine into ParsedNote struct
+
+ This means pulldown-cmark is a targeted dependency — it earns its keep for
+ robust heading extraction (handles edge cases like headings in code blocks,
+ which naive regex would get wrong). Everything else is custom parsing.
+
  ---
  Phase 1 — Core CLI & Vault Indexing
 
- Goal: A working CLI that can initialize a vault, scan Markdown files, parse wikilinks/tags/frontmatter, and store everything in a SQLite index.
+ Goal: A working CLI that can initialize a vault, scan Markdown files, parse wikilinks/tags/frontmatter, store everything in a SQLite index with FTS5, and report vault status.
 
  1.1 Project scaffolding
 
@@ -119,26 +175,44 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  provider = "claude"  # claude | openai | ollama
  # API keys read from env: ANTHROPIC_API_KEY, OPENAI_API_KEY
  # ollama_url = "http://localhost:11434"
- embedding_model = "text-embedding-3-small"  # or provider-specific
- - Create .openidiom/index.db (empty SQLite database)
+ embedding_provider = "openai"
+ embedding_model = "text-embedding-3-small"
+ - Create .openidiom/index.db (empty SQLite database with schema applied)
+ - Validate config on creation (see Config Validation section)
  - Print confirmation
 
- 1.3 Markdown parser (core/parser.rs)
+ 1.3 Config validation (core/vault.rs)
 
- - Parse YAML frontmatter (between --- delimiters) into serde_yaml::Value
- - Extract wikilinks: [[target]] and [[target|alias]]
- - Extract tags: #tag and nested #tag/subtag (from both body and frontmatter)
- - Extract headings (for section-level linking later)
- - Return a ParsedNote struct:
+ All config loading must validate:
+ - Required fields present and non-empty
+ - provider must be one of: claude, openai, ollama
+ - embedding_provider must be one of: openai, ollama
+ - daily_format must be a valid chrono format string
+ - ignore patterns must be valid
+ - Unknown keys trigger a warning (not error) — forward compatibility
+ - On validation failure: clear error message with the specific field, expected values,
+   and a suggestion. Exit code 2.
+ - Example: "Invalid provider 'chatgpt' in config.toml. Valid options: claude, openai, ollama"
+
+ 1.4 Markdown parser (core/parser.rs)
+
+ Parser pipeline:
+ 1. gray_matter: extract YAML frontmatter → serde_yml::Value
+ 2. regex: extract wikilinks [[target]] and [[target|alias]]
+ 3. regex: extract tags #tag and #tag/subtag (from body; also from frontmatter 'tags' field)
+ 4. pulldown-cmark: extract headings (H1-H6) with level info
+ 5. Word count from body text
+
+ Return a ParsedNote struct:
  pub struct ParsedNote {
      pub path: PathBuf,
      pub title: String,          // filename without .md, or frontmatter title
-     pub frontmatter: Option<serde_yaml::Value>,
+     pub frontmatter: Option<serde_yml::Value>,
      pub wikilinks: Vec<WikiLink>,
      pub tags: Vec<String>,
      pub headings: Vec<Heading>,
      pub word_count: usize,
-     pub raw_content: String,
+     pub raw_content: String,    // body without frontmatter
  }
 
  pub struct WikiLink {
@@ -147,7 +221,13 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
      pub line: usize,
  }
 
- 1.4 SQLite schema (db/schema.rs)
+ pub struct Heading {
+     pub text: String,
+     pub level: u8,             // 1-6
+     pub line: usize,
+ }
+
+ 1.5 SQLite schema (db/schema.rs)
 
  CREATE TABLE notes (
      id INTEGER PRIMARY KEY,
@@ -155,14 +235,14 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
      title TEXT NOT NULL,
      word_count INTEGER,
      frontmatter_json TEXT,     -- frontmatter stored as JSON
-     content_hash TEXT,         -- for incremental re-indexing
+     content_hash TEXT,         -- SHA-256 for incremental re-indexing
      indexed_at TEXT NOT NULL
  );
 
  CREATE TABLE links (
      id INTEGER PRIMARY KEY,
      source_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
-     target_title TEXT NOT NULL, -- resolved later
+     target_title TEXT NOT NULL,
      target_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
      alias TEXT,
      line INTEGER
@@ -178,16 +258,36 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
      id INTEGER PRIMARY KEY,
      note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
      text TEXT NOT NULL,
-     level INTEGER NOT NULL
+     level INTEGER NOT NULL,
+     line INTEGER
  );
 
- -- For AI phase
+ -- FTS5 full-text search index
+ CREATE VIRTUAL TABLE notes_fts USING fts5(
+     title,
+     content,
+     content='notes',
+     content_rowid='id',
+     tokenize='porter unicode61'
+ );
+
+ -- Triggers to keep FTS5 in sync
+ CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
+     INSERT INTO notes_fts(rowid, title, content)
+     VALUES (new.id, new.title, '');
+ END;
+ -- Note: content column populated separately after indexing body text
+ -- Full trigger set for UPDATE and DELETE included in implementation
+
+ -- For AI phase (Phase 3)
  CREATE TABLE embeddings (
      id INTEGER PRIMARY KEY,
      note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
      chunk_index INTEGER,
-     chunk_text TEXT,
-     embedding BLOB,            -- f32 vector stored as bytes
+     start_byte INTEGER NOT NULL,   -- byte offset into file
+     end_byte INTEGER NOT NULL,     -- byte offset into file
+     preview TEXT,                  -- first 200 chars for display
+     embedding BLOB,               -- f32 vector stored as bytes
      model TEXT
  );
 
@@ -195,8 +295,9 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  CREATE INDEX idx_links_source ON links(source_id);
  CREATE INDEX idx_links_target ON links(target_id);
  CREATE INDEX idx_notes_title ON notes(title);
+ CREATE INDEX idx_embeddings_note ON embeddings(note_id);
 
- 1.5 Indexer (core/index.rs)
+ 1.6 Indexer (core/index.rs)
 
  - Walk vault directory using walkdir, respecting ignore patterns from config
  - For each .md file:
@@ -204,67 +305,123 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
    - Skip if hash matches existing DB entry (incremental indexing)
    - Parse with core/parser.rs
    - Upsert into notes, links, tags, headings tables
- - After all files indexed, resolve links.target_id by matching links.target_title → notes.title
+   - Insert body text into notes_fts for full-text search
+ - After all files indexed, run link resolution (core/link_resolver.rs):
+   - Build title→path lookup (case-insensitive, handles duplicates)
+   - Resolve links.target_id using Obsidian-compatible rules
+   - Log warnings for ambiguous resolutions
  - Print summary: Indexed 142 notes, 387 links, 95 tags (12 new, 3 updated)
 
- 1.6 oi index command
+ 1.7 oi index command
 
- - Load vault config from .openidiom/config.toml
+ - Load vault config from .openidiom/config.toml (with validation)
  - Run indexer
  - Flag: --force to re-index everything (ignore content hashes)
  - Flag: --stats to print detailed stats
+
+ 1.8 oi status command (cli/status.rs)
+
+ oi status
+ # Output:
+ # Vault: my-vault (/home/user/notes)
+ # Notes: 142 | Links: 387 | Tags: 95 unique
+ # Last indexed: 2026-04-05 14:23:01 (2 hours ago)
+ # Stale: 3 notes modified since last index
+ # AI: embeddings indexed (142/142 notes)
+ # Config: .openidiom/config.toml (valid)
+
+ - Reads DB stats (counts, last indexed_at)
+ - Compares file mtimes to indexed_at to detect stale notes
+ - Reports embedding coverage if AI index exists
+ - Validates config and reports any issues
+ - --json flag for machine-readable output
 
  Verification — Phase 1
 
  1. cargo build succeeds
  2. oi init in a test folder creates .openidiom/ with config and empty DB
- 3. oi index on a folder with 5-10 sample .md files (including wikilinks, tags, frontmatter) correctly populates the SQLite database
- 4. Write integration tests using tempfile + assert_cmd:
+ 3. oi init with invalid config values fails with clear error messages
+ 4. oi index on a folder with 5-10 sample .md files correctly populates SQLite
+ 5. FTS5 table is populated and searchable
+ 6. Link resolution handles: exact match, ambiguous names, explicit paths
+ 7. oi status reports correct stats
+ 8. Write integration tests using tempfile + assert_cmd:
    - test_init_creates_config
+   - test_init_validates_config
    - test_index_parses_wikilinks
    - test_index_parses_tags
    - test_index_parses_frontmatter
    - test_index_incremental (second run skips unchanged files)
    - test_index_resolves_links
+   - test_index_resolves_ambiguous_links
+   - test_index_populates_fts
+   - test_status_reports_stats
 
  ---
- Phase 2 — Query, Graph & Daily Notes
+ Phase 2 — Query, Search, Graph & Daily Notes
 
- Goal: Query the index by tags/links/frontmatter, export the graph, and manage daily notes.
+ Goal: Query the index structurally, search by keyword (FTS5), export the graph, and manage daily notes.
 
  2.1 Query engine (core/query.rs, cli/query.rs)
 
- Syntax for oi query:
- oi query "tag:#rust"                    # notes with tag #rust
- oi query "tag:#rust AND tag:#async"     # intersection
- oi query "link:api-design"             # notes that link to api-design
- oi query "backlink:api-design"         # notes that api-design links to
- oi query "title:auth"                  # title contains "auth"
- oi query "front:status=draft"          # frontmatter field match
- oi query "words>1000"                  # word count filter
- oi query "orphan:true"                 # notes with no inbound or outbound links
+ v1: Structured flags (composable, discoverable, shell-completable):
+ oi query --tag rust                     # notes with tag #rust
+ oi query --tag rust --tag async         # intersection (AND)
+ oi query --link api-design              # notes that link to api-design
+ oi query --backlink api-design          # notes linked FROM api-design
+ oi query --title auth                   # title contains "auth"
+ oi query --front "status=draft"         # frontmatter field match
+ oi query --min-words 1000               # word count filter
+ oi query --orphan                       # notes with no inbound or outbound links
 
- Implementation:
- - Parse query string into a filter AST (keep it simple — no need for a full parser, a basic recursive descent or even split-on-AND/OR is fine for v1)
- - Translate filters to SQL WHERE clauses with JOINs
- - Output: table (default), JSON (--json), or just paths (--paths)
+ Internal design: all flags produce a composable Filter enum:
+ enum Filter {
+     Tag(String),
+     Link(String),
+     Backlink(String),
+     Title(String),
+     Frontmatter(String, String),
+     MinWords(usize),
+     MaxWords(usize),
+     Orphan,
+     And(Vec<Filter>),
+     Or(Vec<Filter>),
+     Not(Box<Filter>),
+ }
 
- 2.2 Check command (cli/check.rs)
+ v1 uses AND for all flags. The Filter tree supports OR/NOT for a future DSL
+ parser that produces the same type — no technical debt.
+
+ Output: table (default), JSON (--json), or just paths (--paths)
+
+ 2.2 Keyword search (core/search.rs, cli/search.rs)
+
+ oi search "error handling"             # FTS5 keyword search
+ oi search "error handling" --limit 20  # limit results
+ oi search "error handling" --paths     # just file paths
+
+ - Uses SQLite FTS5 with BM25 ranking (built-in)
+ - Returns: path, title, relevance score, snippet with highlighted matches
+ - Zero API cost — entirely local
+ - Distinct from oi ai search (semantic/vector search, Phase 3)
+
+ 2.3 Check command (cli/check.rs)
 
  oi check                    # run all checks
  oi check --orphans          # notes with no links in or out
  oi check --broken-links     # wikilinks pointing to non-existent notes
+ oi check --ambiguous-links  # wikilinks with multiple resolution candidates
  oi check --dead-tags        # tags used only once
  - Queries the index for each check type
  - Outputs a report with file paths and line numbers
  - Exit code 1 if any issues found (useful in CI/pre-commit hooks)
 
- 2.3 Graph export (core/graph.rs, cli/graph.rs)
+ 2.4 Graph export (core/graph.rs, cli/graph.rs)
 
  oi graph                    # full graph as JSON adjacency list
  oi graph --format dot       # Graphviz DOT format
  oi graph --format json      # JSON (default)
- oi graph --filter "tag:#project-x"  # subgraph
+ oi graph --filter --tag project-x  # subgraph by tag
  oi graph --depth 2 --root "api-design"  # ego graph, 2 hops from root
 
  JSON output shape:
@@ -279,54 +436,72 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
 
  DOT output for piping to dot -Tsvg -o graph.svg.
 
- 2.4 Daily notes (cli/daily.rs)
+ 2.5 Daily notes (cli/daily.rs)
 
- oi daily                    # create/print today's note path
- oi daily --open             # create and print path (user pipes to editor)
+ oi daily                    # create today's note, print path
  oi daily --yesterday
  oi daily --date 2026-03-25
  oi daily --template path/to/template.md
  - Creates {daily_folder}/{daily_format}.md if it doesn't exist
  - If a template is configured, copies template content into new daily note
- - Prints the path to stdout (so users can do nvim $(oi daily))
+ - Prints the path to stdout (so users can do: nvim $(oi daily), or $EDITOR $(oi daily))
+ - Idempotent: if note exists, just prints the path
 
  Verification — Phase 2
 
- 1. oi query "tag:#test" returns correct notes from the fixture vault
- 2. oi query "orphan:true" finds notes with no links
- 3. oi check --broken-links detects a wikilink to a non-existent note
- 4. oi graph --format dot | dot -Tsvg produces a valid SVG
- 5. oi graph --format json output is valid JSON matching the schema
- 6. oi daily creates a dated note and returns the path
- 7. Integration tests:
+ 1. oi query --tag test returns correct notes from the fixture vault
+ 2. oi query --orphan finds notes with no links
+ 3. oi search "keyword" returns ranked results with snippets
+ 4. oi check --broken-links detects a wikilink to a non-existent note
+ 5. oi check --ambiguous-links detects notes with multiple resolution candidates
+ 6. oi graph --format dot | dot -Tsvg produces a valid SVG
+ 7. oi graph --format json output is valid JSON matching the schema
+ 8. oi daily creates a dated note and returns the path
+ 9. Integration tests:
    - test_query_by_tag
    - test_query_by_link
    - test_query_frontmatter
+   - test_query_filter_composition
+   - test_search_keyword
+   - test_search_ranking
    - test_check_broken_links
    - test_check_orphans
+   - test_check_ambiguous_links
    - test_graph_json_output
    - test_graph_dot_output
+   - test_graph_ego_subgraph
    - test_daily_creates_note
    - test_daily_idempotent
 
  ---
  Phase 3 — AI Integration Layer
 
- Goal: Pluggable AI backend with embedding-based semantic search and LLM-powered commands.
+ Goal: Pluggable AI backend with embedding-based semantic search, LLM-powered commands, streaming output, cost transparency, and retry resilience.
+
+ IMPORTANT: AI features that use cloud providers (Claude, OpenAI) incur API costs.
+ Only Ollama is fully local/free. The architecture must make this transparent.
+
+ Cost flow:
+ - oi ai index → sends note content to embedding API → cost per token
+ - oi ai ask/summarize/draft/connect → sends query + context to LLM API → cost per request
+ - oi ai search → local cosine similarity over stored vectors → FREE after initial embedding
+ - oi search → local FTS5 → always FREE
 
  3.1 Provider traits (ai/provider.rs, ai/embedder.rs)
 
- #[async_trait]
+ Using native async traits (Rust 1.75+, no async_trait crate):
+
  pub trait LlmProvider: Send + Sync {
      async fn complete(&self, prompt: &str, system: Option<&str>) -> Result<String>;
+     async fn stream(&self, prompt: &str, system: Option<&str>) -> Result<Box<dyn Stream<Item = Result<String>> + Send + Unpin>>;
      fn name(&self) -> &str;
  }
 
- #[async_trait]
  pub trait Embedder: Send + Sync {
      async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
      fn dimension(&self) -> usize;
      fn model_name(&self) -> &str;
+     fn cost_per_token(&self) -> Option<f64>;  // for cost estimation
  }
 
  3.2 Provider implementations (ai/providers/)
@@ -335,54 +510,68 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  - Uses reqwest to call https://api.anthropic.com/v1/messages
  - Reads ANTHROPIC_API_KEY from env
  - Model configurable in config.toml (default: claude-sonnet-4-6)
- - For embeddings: delegate to Voyage AI or fall back to OpenAI embeddings (Claude doesn't have a native embedding API — document this clearly)
+ - Supports streaming via SSE (server-sent events)
+ - For embeddings: delegate to OpenAI or Voyage AI (Claude has no native embedding API)
 
  OpenAI-compatible (openai.rs):
  - Calls /v1/chat/completions and /v1/embeddings
  - Reads OPENAI_API_KEY from env
- - base_url configurable (so it works with any OpenAI-compatible API)
+ - base_url configurable (works with any OpenAI-compatible API)
+ - Supports streaming via SSE
 
  Ollama (ollama.rs):
- - Calls local Ollama REST API (/api/generate, /api/embeddings)
+ - Calls local Ollama REST API (/api/generate, /api/embed)
  - Default URL http://localhost:11434, configurable
- - No API key needed
+ - No API key needed — fully local, no cost
+ - Supports streaming natively
 
  Provider factory:
  - Read ai.provider from config, return the right Box<dyn LlmProvider> + Box<dyn Embedder>
- - Config:
- [ai]
- provider = "claude"          # claude | openai | ollama
- model = "claude-sonnet-4-6"  # LLM model for completions
- embedding_provider = "openai"  # can differ from completion provider
- embedding_model = "text-embedding-3-small"
- # base_url = "https://api.openai.com/v1"   # for openai-compatible
- # ollama_url = "http://localhost:11434"
+ - Validate provider/model combination on construction
+ - Missing API key → clear error: "ANTHROPIC_API_KEY not set. Required for provider 'claude'."
 
- 3.3 Embedding indexer (ai/semantic.rs)
+ 3.3 Cost estimation (ai/cost.rs)
+
+ Before any API-calling operation, estimate and display cost:
+ - Count tokens in all content to be sent (approximate: chars/4 for English)
+ - Look up cost per token for the configured model
+ - Display: "This will embed ~200k tokens across 142 notes. Estimated cost: ~$0.02 (text-embedding-3-small). Proceed? [y/N]"
+ - Flag: --yes to skip confirmation
+ - Flag: --dry-run to see cost estimate without executing
+ - After operation: display actual usage if the API returns token counts
+
+ oi ai metrics:
+ - Show cumulative API usage stats (stored in SQLite)
+ - Tokens sent, tokens received, estimated cost, by provider
+ - Per-command breakdown
+
+ 3.4 Embedding indexer (ai/semantic.rs)
 
  oi ai index                 # embed all notes, store in SQLite
  oi ai index --force         # re-embed everything
+ oi ai index --dry-run       # show cost estimate only
 
  - Chunk notes into ~500 token segments (split on headings or paragraphs)
- - Batch embed chunks (respect rate limits — configurable batch size)
- - Store embeddings as BLOB (f32 bytes) in embeddings table
+ - Batch embed chunks (configurable batch size)
+ - Retry with exponential backoff on rate limits (backoff crate)
+ - Store in embeddings table: byte offsets + preview + vector blob
  - Incremental: skip notes whose content_hash hasn't changed
 
  Vector search (no external vector DB needed for v1):
  - Load relevant embeddings from SQLite
- - Compute cosine similarity in Rust (it's fast enough for <50k chunks)
+ - Compute cosine similarity in Rust (fast enough for <50k chunks)
  - Return top-K results
- - Future optimization: add HNSW index via usearch crate if needed
+ - Future optimization: HNSW index via usearch crate if needed
 
- 3.4 AI commands (ai/commands.rs, cli/ai.rs)
+ 3.5 AI commands (ai/commands.rs, cli/ai.rs)
 
- # Semantic search over notes
+ # Semantic search over notes (uses stored embeddings — no LLM call)
  oi ai search "authentication patterns"
  # → Returns top 5 notes with relevance scores and excerpts
 
- # Ask a question, grounded in your notes
+ # Ask a question, grounded in your notes (streams response)
  oi ai ask "What are our conventions for error handling?"
- # → LLM answers using retrieved note context (RAG)
+ # → LLM answers using retrieved note context (RAG), streamed to terminal
 
  # Suggest connections between a note and the rest of the vault
  oi ai connect api-design
@@ -397,13 +586,19 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  oi ai draft "Compare our auth approaches" --context "#auth"
  # → Creates a new .md file with AI-generated content, linked to source notes
 
- RAG implementation (ai/context.rs):
- 1. For ask/draft: embed the query → vector search → retrieve top-K chunks
- 2. Assemble a prompt with the retrieved chunks as context
- 3. System prompt instructs the LLM to only use provided context, cite sources by note title
- 4. Return the response with source attribution
+ All LLM-calling commands (ask, summarize, draft, connect):
+ - Stream responses to terminal by default
+ - Flag: --no-stream for batch mode (returns complete response)
+ - Display source citations (which notes were used as context)
 
- 3.5 Config for AI (config.toml additions)
+ RAG implementation (ai/context.rs):
+ 1. Embed the query → vector search → retrieve top-K chunks
+ 2. Load full chunk text from disk using byte offsets (not stored in DB)
+ 3. Assemble a prompt with the retrieved chunks as context
+ 4. System prompt instructs the LLM to only use provided context, cite sources
+ 5. Stream the response with source attribution
+
+ 3.6 Config for AI (config.toml additions)
 
  [ai]
  provider = "claude"
@@ -414,21 +609,31 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  search_top_k = 10          # default results for semantic search
  context_top_k = 5          # chunks to include in RAG context
  batch_size = 50            # embeddings per API call
+ # base_url = "https://api.openai.com/v1"   # for openai-compatible
+ # ollama_url = "http://localhost:11434"
 
  Verification — Phase 3
 
- 1. oi ai index processes a fixture vault and populates the embeddings table
- 2. oi ai search "test query" returns ranked results
- 3. oi ai ask "question" returns a grounded answer with source citations
- 4. oi ai connect <note> suggests plausible links
- 5. Test with --provider ollama against a local Ollama instance (manual test)
- 6. Integration tests (mock HTTP responses for AI providers):
+ 1. oi ai index processes a fixture vault, shows cost estimate, populates embeddings
+ 2. oi ai index --dry-run shows estimate without calling API
+ 3. oi ai search "test query" returns ranked results
+ 4. oi ai ask "question" streams a grounded answer with source citations
+ 5. oi ai connect <note> suggests plausible links
+ 6. oi ai metrics shows usage stats
+ 7. Rate limit triggers retry with backoff (test with mock server)
+ 8. Missing API key produces clear error message
+ 9. Test with --provider ollama against a local Ollama instance (manual test)
+ 10. Integration tests (mock HTTP responses for AI providers):
    - test_embed_and_search
    - test_ask_includes_context
+   - test_ask_streams_response
    - test_provider_factory_claude
    - test_provider_factory_openai
    - test_provider_factory_ollama
    - test_incremental_embedding
+   - test_cost_estimation
+   - test_retry_on_rate_limit
+   - test_missing_api_key_error
 
  ---
  Phase 4 — Polish & Distribution
@@ -444,9 +649,10 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  4.2 Pipe-friendliness
 
  # Compose with standard tools
- oi query "tag:#todo" --paths | xargs nvim
+ oi query --tag todo --paths | xargs nvim
  oi graph --format json | jq '.nodes | length'
  oi check --broken-links --json | jq '.[].path'
+ oi search "auth" --paths | xargs cat
  oi ai search "auth" --json | jq '.[0].path' | xargs cat
 
  4.3 Shell completions
@@ -456,7 +662,7 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
 
  4.4 Error handling
 
- - Use thiserror for typed errors
+ - Use thiserror for typed errors (library layer), anyhow for CLI layer
  - Friendly error messages: "No vault found. Run oi init first." not "Error: config.toml not found"
  - Exit codes: 0 = success, 1 = check found issues, 2 = user error, 3 = system/API error
 
@@ -476,6 +682,7 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  - Full command reference
  - Configuration reference
  - AI setup guide per provider
+ - Cost transparency section
 
  Verification — Phase 4
 
@@ -486,50 +693,114 @@ OpenIdiom — Headless Knowledge Base CLI with AI Integration
  5. Shell completions generate without errors
 
  ---
+ Phase 5 — MCP Server Layer
+
+ Goal: Expose vault operations as MCP tools so any AI assistant (Claude Desktop,
+ VS Code Copilot, etc.) can query the knowledge base programmatically.
+
+ NOTE: CLI-based AI tools (Claude Code, aider) can use `oi` commands directly
+ via shell execution. The MCP layer is for tools that speak the MCP protocol.
+
+ 5.1 MCP server (mcp/server.rs)
+
+ oi mcp serve                # start MCP server on stdio (default)
+ oi mcp serve --port 3000    # start on TCP port
+
+ Implements the MCP (Model Context Protocol) specification:
+ - Transport: stdio (for subprocess integration) and optional TCP
+ - Protocol: JSON-RPC 2.0
+
+ 5.2 Exposed tools (mcp/tools.rs)
+
+ Tools exposed to AI assistants:
+ - vault_status: get vault name, note count, index freshness
+ - query_notes: structured query (same as oi query flags)
+ - search_notes: keyword search (FTS5)
+ - get_note: read a specific note's content and metadata
+ - get_graph: get graph data (nodes + edges, optionally filtered)
+ - check_vault: run vault health checks
+ - ai_search: semantic search (if embeddings indexed)
+ - ai_ask: RAG-powered question answering
+
+ Resources exposed:
+ - vault://notes — list of all notes with metadata
+ - vault://tags — all tags with counts
+ - vault://graph — full graph structure
+
+ 5.3 Design principles
+
+ - Provider-agnostic: MCP is a protocol, not tied to any AI model
+ - Read-only by default: AI tools can query but not modify notes
+ - Future: opt-in write tools (create note, add link) behind a config flag
+ - Authentication: none for stdio, optional token for TCP
+
+ Verification — Phase 5
+
+ 1. oi mcp serve starts and responds to MCP initialize handshake
+ 2. All tools return valid responses
+ 3. Works with Claude Desktop as MCP server
+ 4. Integration tests with mock MCP client
+
+ ---
  Implementation Order & Priority
 
- ┌───────┬─────────┬───────────────────────────────────────────────┬──────────────┐
- │ Order │  Phase  │                  Deliverable                  │   Priority   │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 1     │ 1.1     │ Project scaffolding, CLI skeleton             │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 2     │ 1.2     │ oi init                                       │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 3     │ 1.3     │ Markdown parser                               │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 4     │ 1.4     │ SQLite schema                                 │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 5     │ 1.5-1.6 │ Indexer + oi index                            │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 6     │ 2.1     │ oi query                                      │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 7     │ 2.2     │ oi check                                      │ Should have  │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 8     │ 2.3     │ oi graph                                      │ Should have  │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 9     │ 2.4     │ oi daily                                      │ Nice to have │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 10    │ 3.1-3.2 │ AI provider traits + implementations          │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 11    │ 3.3     │ Embedding indexer + vector search             │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 12    │ 3.4     │ AI commands (search, ask, connect, summarize) │ Must have    │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 13    │ 4.1-4.4 │ Output polish, completions, error handling    │ Should have  │
- ├───────┼─────────┼───────────────────────────────────────────────┼──────────────┤
- │ 14    │ 4.5-4.6 │ CI, releases, README                          │ Should have  │
- └───────┴─────────┴───────────────────────────────────────────────┴──────────────┘
+ ┌───────┬─────────┬───────────────────────────────────────────────────┬──────────────┐
+ │ Order │  Phase  │                  Deliverable                      │   Priority   │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 1     │ 1.1     │ Project scaffolding, CLI skeleton                 │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 2     │ 1.2-1.3 │ oi init + config validation                      │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 3     │ 1.4     │ Markdown parser (gray_matter + regex + pulldown)  │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 4     │ 1.5     │ SQLite schema + FTS5                             │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 5     │ 1.6     │ Indexer + link resolver                           │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 6     │ 1.7     │ oi index command                                  │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 7     │ 1.8     │ oi status                                         │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 8     │ 2.1     │ oi query (structured flags)                       │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 9     │ 2.2     │ oi search (FTS5 keyword search)                   │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 10    │ 2.3     │ oi check (+ ambiguous links)                      │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 11    │ 2.4     │ oi graph                                          │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 12    │ 2.5     │ oi daily                                          │ Nice to have │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 13    │ 3.1-3.2 │ AI provider traits + implementations (streaming)  │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 14    │ 3.3     │ Cost estimation + metrics                         │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 15    │ 3.4     │ Embedding indexer + vector search (with retry)    │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 16    │ 3.5     │ AI commands (search, ask, connect, summarize)     │ Must have    │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 17    │ 4.1-4.4 │ Output polish, completions, error handling        │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 18    │ 5.1-5.3 │ MCP server layer                                  │ Should have  │
+ ├───────┼─────────┼───────────────────────────────────────────────────┼──────────────┤
+ │ 19    │ 4.5-4.6 │ CI, releases, README                              │ Should have  │
+ └───────┴─────────┴───────────────────────────────────────────────────┴──────────────┘
 
  ---
  Key Design Decisions
 
  1. SQLite over in-memory index — Persists between runs, enables incremental indexing, fast enough for 100k+ notes. No external database to manage.
  2. No custom vector DB — Cosine similarity in Rust over SQLite-stored vectors is fast enough for vaults up to ~50k chunks. HNSW can be added later if needed via the usearch crate.
- 3. Pluggable AI from day one — The trait abstraction is minimal overhead and avoids a painful refactor later. Claude as default, OpenAI-compatible for flexibility, Ollama for
- local/private use.
- 4. Embedding provider separate from completion provider — Users may want Claude for completions but OpenAI for embeddings (since Claude doesn't have a native embedding API). Config
- supports this.
+ 3. Pluggable AI from day one — The trait abstraction is minimal overhead and avoids a painful refactor later. Claude as default, OpenAI-compatible for flexibility, Ollama for local/private use.
+ 4. Embedding provider separate from completion provider — Users may want Claude for completions but OpenAI for embeddings (since Claude doesn't have a native embedding API). Config supports this.
  5. CLI binary name: oi — Short, fast to type, stands for OpenIdiom. Configured via [[bin]] in Cargo.toml.
  6. No watch mode in v1 — oi index is explicit. A --watch flag can be added later using notify crate. Keep it simple.
- 7. Obsidian-compatible — Reads standard [[wikilinks]], #tags, and YAML frontmatter. Users can run OpenIdiom alongside Obsidian on the same vault. The .openidiom/ folder is
- self-contained.
+ 7. Obsidian-compatible — Reads standard [[wikilinks]], #tags, and YAML frontmatter. Users can run OpenIdiom alongside Obsidian on the same vault. The .openidiom/ folder is self-contained.
+ 8. FTS5 before AI — Keyword search (free, fast, local) available before semantic search. Most queries don't need AI.
+ 9. Structured flags over DSL for v1 — Discoverable via --help, shell-completable, zero parser maintenance. Internal Filter enum supports OR/NOT for a future DSL parser — no debt.
+ 10. Byte-offset chunk storage — Embeddings table stores byte ranges + preview, not full chunk text. Full text loaded from disk on demand. Keeps DB lean.
+ 11. Cost transparency — All API-calling operations show estimated cost before execution. Usage metrics stored and queryable. Users always know what they're paying for.
+ 12. Streaming by default — LLM responses stream to terminal. Better UX for commands that may take 10+ seconds.
+ 13. MCP for AI tool integration — CLI-based AIs use oi directly. GUI-based AIs (Claude Desktop, etc.) connect via MCP server. Provider-agnostic by design.
+ 14. Parser strategy — gray_matter for frontmatter, regex for wikilinks/tags, pulldown-cmark only for heading extraction. Each tool used for what it's actually good at.
+ 15. Obsidian-compatible link resolution — Case-insensitive, shortest-path-wins for ambiguity, with warnings and a check command for unresolvable links.
