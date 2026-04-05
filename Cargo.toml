@@ -1,0 +1,37 @@
+[package]
+name = "openidiom"
+version = "0.1.0"
+edition = "2024"
+description = "Headless knowledge base CLI with AI integration"
+license = "MIT"
+
+[[bin]]
+name = "oi"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+pulldown-cmark = "0.12"
+# Frontmatter parsed manually (--- delimiters) + serde_yml for YAML
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+rusqlite = { version = "0.31", features = ["bundled"] }
+walkdir = "2"
+regex = "1"
+chrono = "0.4"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+comfy-table = "7"
+colored = "2"
+directories = "5"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+sha2 = "0.10"
+backoff = { version = "0.4", features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
