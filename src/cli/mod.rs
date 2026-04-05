@@ -7,6 +7,8 @@ mod check;
 mod graph;
 mod daily;
 mod ai;
+mod completions;
+pub mod mcp;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -49,6 +51,10 @@ pub enum Command {
     Daily(daily::DailyArgs),
     /// AI-powered commands
     Ai(ai::AiArgs),
+    /// Generate shell completions
+    Completions(completions::CompletionsArgs),
+    /// Start MCP server
+    Mcp(mcp::McpArgs),
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
@@ -62,5 +68,7 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Graph(args) => graph::run(args),
         Command::Daily(args) => daily::run(args),
         Command::Ai(args) => ai::run(args),
+        Command::Completions(args) => completions::run(args),
+        Command::Mcp(args) => mcp::run(args),
     }
 }

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 pulldown-cmark = "0.12"
 # Frontmatter parsed manually (--- delimiters) + serde_yml for YAML
 serde = { version = "1", features = ["derive"] }
