@@ -1,6 +1,11 @@
 mod init;
 mod index;
 mod status;
+mod query;
+mod search;
+mod check;
+mod graph;
+mod daily;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -32,15 +37,15 @@ pub enum Command {
         json: bool,
     },
     /// Query notes by tags, links, frontmatter
-    Query,
+    Query(query::QueryArgs),
     /// Full-text keyword search
-    Search,
+    Search(search::SearchArgs),
     /// Run vault health checks
-    Check,
+    Check(check::CheckArgs),
     /// Export the link graph
-    Graph,
+    Graph(graph::GraphArgs),
     /// Create or print daily note path
-    Daily,
+    Daily(daily::DailyArgs),
     /// AI-powered commands
     Ai,
 }
@@ -50,11 +55,11 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Init => init::run(),
         Command::Index { force, stats } => index::run(force, stats),
         Command::Status { json } => status::run(json),
-        Command::Query => todo!("Phase 2"),
-        Command::Search => todo!("Phase 2"),
-        Command::Check => todo!("Phase 2"),
-        Command::Graph => todo!("Phase 2"),
-        Command::Daily => todo!("Phase 2"),
+        Command::Query(args) => query::run(args),
+        Command::Search(args) => search::run(args),
+        Command::Check(args) => check::run(args),
+        Command::Graph(args) => graph::run(args),
+        Command::Daily(args) => daily::run(args),
         Command::Ai => todo!("Phase 3"),
     }
 }
