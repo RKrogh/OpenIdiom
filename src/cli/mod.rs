@@ -6,6 +6,7 @@ mod search;
 mod check;
 mod graph;
 mod daily;
+mod ai;
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -47,7 +48,7 @@ pub enum Command {
     /// Create or print daily note path
     Daily(daily::DailyArgs),
     /// AI-powered commands
-    Ai,
+    Ai(ai::AiArgs),
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
@@ -60,6 +61,6 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Check(args) => check::run(args),
         Command::Graph(args) => graph::run(args),
         Command::Daily(args) => daily::run(args),
-        Command::Ai => todo!("Phase 3"),
+        Command::Ai(args) => ai::run(args),
     }
 }

@@ -41,9 +41,28 @@ pub struct VaultSection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AiSection {
     pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub embedding_provider: String,
     pub embedding_model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub ollama_url: Option<String>,
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
+    #[serde(default = "default_search_top_k")]
+    pub search_top_k: usize,
+    #[serde(default = "default_context_top_k")]
+    pub context_top_k: usize,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
 }
+
+fn default_chunk_size() -> usize { 500 }
+fn default_search_top_k() -> usize { 10 }
+fn default_context_top_k() -> usize { 5 }
+fn default_batch_size() -> usize { 50 }
 
 const VALID_PROVIDERS: &[&str] = &["claude", "openai", "ollama"];
 const VALID_EMBEDDING_PROVIDERS: &[&str] = &["openai", "ollama"];
@@ -103,8 +122,15 @@ impl VaultConfig {
             },
             ai: AiSection {
                 provider: "claude".into(),
+                model: None,
                 embedding_provider: "openai".into(),
                 embedding_model: "text-embedding-3-small".into(),
+                base_url: None,
+                ollama_url: None,
+                chunk_size: default_chunk_size(),
+                search_top_k: default_search_top_k(),
+                context_top_k: default_context_top_k(),
+                batch_size: default_batch_size(),
             },
         }
     }

@@ -1,5 +1,6 @@
 #![warn(clippy::all)]
 
+mod ai;
 mod cli;
 mod core;
 mod db;
