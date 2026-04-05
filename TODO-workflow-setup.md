@@ -18,6 +18,14 @@ Cross-machine sync via Syncthing. Every session contributes, every session benef
 └── ...
 ```
 
+## Pre-setup: OpenIdiom features needed
+
+### 0. Add .oiignore support
+- [ ] Implement `.oiignore` file at vault root (gitignore-style, one pattern per line)
+- [ ] Parsed alongside config.toml ignore list; `.oiignore` takes priority when present
+- [ ] Essential for multi-repo vault — TOML array is too clunky for 20+ patterns
+- [ ] Write tests first (TDD), then implement
+
 ## Setup Tasks
 
 ### 1. Initialize the vault at ~/Projects
