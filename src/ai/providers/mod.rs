@@ -1,13 +1,16 @@
+pub mod claude;
 pub mod openai;
 pub mod ollama;
 
 use anyhow::Result;
 use crate::core::vault::AiSection;
 
+use self::claude::ClaudeProvider;
 use self::openai::{OpenAiProvider, OpenAiEmbedder};
 use self::ollama::{OllamaProvider, OllamaEmbedder};
 
 pub enum AnyProvider {
+    Claude(ClaudeProvider),
     OpenAi(OpenAiProvider),
     Ollama(OllamaProvider),
 }
@@ -21,6 +24,7 @@ impl AnyProvider {
     pub async fn complete(&self, prompt: &str, system: Option<&str>) -> Result<String> {
         use crate::ai::provider::LlmProvider;
         match self {
+            Self::Claude(p) => p.complete(prompt, system).await,
             Self::OpenAi(p) => p.complete(prompt, system).await,
             Self::Ollama(p) => p.complete(prompt, system).await,
         }
@@ -30,6 +34,7 @@ impl AnyProvider {
     pub fn name(&self) -> &str {
         use crate::ai::provider::LlmProvider;
         match self {
+            Self::Claude(p) => p.name(),
             Self::OpenAi(p) => p.name(),
             Self::Ollama(p) => p.name(),
         }
@@ -73,10 +78,19 @@ impl AnyEmbedder {
 
 pub fn create_provider(config: &AiSection) -> Result<AnyProvider> {
     match config.provider.as_str() {
-        "openai" | "claude" => {
+        "claude" => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| anyhow::anyhow!(
+                    "ANTHROPIC_API_KEY not set. Required for provider 'claude'."
+                ))?;
+            let model = config.model.clone()
+                .unwrap_or_else(|| "claude-sonnet-4-6".into());
+            Ok(AnyProvider::Claude(ClaudeProvider::new(api_key, model)))
+        }
+        "openai" => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .map_err(|_| anyhow::anyhow!(
-                    "OPENAI_API_KEY not set. Required for provider '{}'.", config.provider
+                    "OPENAI_API_KEY not set. Required for provider 'openai'."
                 ))?;
             let base_url = config.base_url.clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into());
