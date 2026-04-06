@@ -83,8 +83,8 @@ fn extract_frontmatter(content: &str) -> Result<(Option<serde_json::Value>, Stri
                 return Ok((None, body));
             }
 
-            // Parse YAML to serde_yml::Value, then convert to serde_json::Value
-            let yaml_value: serde_yml::Value = serde_yml::from_str(yaml_str)
+            // Parse YAML to serde_yaml_ng::Value, then convert to serde_json::Value
+            let yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml_str)
                 .map_err(|e| ParserError::Frontmatter(e.to_string()))?;
             let json_value = yaml_to_json(yaml_value);
 
@@ -93,11 +93,11 @@ fn extract_frontmatter(content: &str) -> Result<(Option<serde_json::Value>, Stri
     }
 }
 
-fn yaml_to_json(yaml: serde_yml::Value) -> serde_json::Value {
+fn yaml_to_json(yaml: serde_yaml_ng::Value) -> serde_json::Value {
     match yaml {
-        serde_yml::Value::Null => serde_json::Value::Null,
-        serde_yml::Value::Bool(b) => serde_json::Value::Bool(b),
-        serde_yml::Value::Number(n) => {
+        serde_yaml_ng::Value::Null => serde_json::Value::Null,
+        serde_yaml_ng::Value::Bool(b) => serde_json::Value::Bool(b),
+        serde_yaml_ng::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 serde_json::Value::Number(i.into())
             } else if let Some(f) = n.as_f64() {
@@ -106,16 +106,16 @@ fn yaml_to_json(yaml: serde_yml::Value) -> serde_json::Value {
                 serde_json::Value::Null
             }
         }
-        serde_yml::Value::String(s) => serde_json::Value::String(s),
-        serde_yml::Value::Sequence(seq) => {
+        serde_yaml_ng::Value::String(s) => serde_json::Value::String(s),
+        serde_yaml_ng::Value::Sequence(seq) => {
             serde_json::Value::Array(seq.into_iter().map(yaml_to_json).collect())
         }
-        serde_yml::Value::Mapping(map) => {
+        serde_yaml_ng::Value::Mapping(map) => {
             let obj = map
                 .into_iter()
                 .map(|(k, v)| {
                     let key = match k {
-                        serde_yml::Value::String(s) => s,
+                        serde_yaml_ng::Value::String(s) => s,
                         other => format!("{other:?}"),
                     };
                     (key, yaml_to_json(v))
@@ -123,7 +123,7 @@ fn yaml_to_json(yaml: serde_yml::Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
-        serde_yml::Value::Tagged(tagged) => yaml_to_json(tagged.value),
+        serde_yaml_ng::Value::Tagged(tagged) => yaml_to_json(tagged.value),
     }
 }
 

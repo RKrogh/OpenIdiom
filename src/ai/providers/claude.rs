@@ -1,5 +1,8 @@
+use std::time::Duration;
 use anyhow::Result;
 use crate::ai::provider::LlmProvider;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct ClaudeProvider {
     client: reqwest::Client,
@@ -10,7 +13,10 @@ pub struct ClaudeProvider {
 impl ClaudeProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             api_key,
             model,
         }

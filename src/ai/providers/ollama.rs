@@ -1,6 +1,9 @@
+use std::time::Duration;
 use anyhow::Result;
 use crate::ai::provider::LlmProvider;
 use crate::ai::embedder::Embedder;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct OllamaProvider {
     client: reqwest::Client,
@@ -11,7 +14,10 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new(url: String, model: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             url,
             model,
         }
@@ -53,7 +59,10 @@ pub struct OllamaEmbedder {
 impl OllamaEmbedder {
     pub fn new(url: String, model: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             url,
             model,
         }

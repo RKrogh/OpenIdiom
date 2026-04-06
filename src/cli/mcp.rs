@@ -236,7 +236,10 @@ fn tool_search_notes(
 ) -> anyhow::Result<String> {
     let query = args.get("query").and_then(|q| q.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
-    let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
+    if query.len() > 10_000 {
+        anyhow::bail!("Query too long (max 10,000 bytes)");
+    }
+    let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10).min(1000) as usize;
 
     let results = crate::db::queries::search_fts(conn, query, limit)?;
 
@@ -254,7 +257,18 @@ fn tool_get_note(
     let path = args.get("path").and_then(|p| p.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
     let full_path = vault.root.join(path);
-    let content = std::fs::read_to_string(&full_path)?;
+
+    // Resolve to absolute path and verify it stays within the vault root.
+    // This prevents ../  traversal and symlink escapes.
+    let canonical = full_path.canonicalize()
+        .map_err(|_| anyhow::anyhow!("Note not found: {path}"))?;
+    let canonical_root = vault.root.canonicalize()
+        .map_err(|_| anyhow::anyhow!("Vault root not accessible"))?;
+    if !canonical.starts_with(&canonical_root) {
+        anyhow::bail!("Path escapes vault root");
+    }
+
+    let content = std::fs::read_to_string(&canonical)?;
     Ok(content)
 }
 

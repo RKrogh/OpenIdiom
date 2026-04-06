@@ -13,10 +13,10 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 pulldown-cmark = "0.12"
-# Frontmatter parsed manually (--- delimiters) + serde_yml for YAML
+# Frontmatter parsed manually (--- delimiters) + serde_yaml_ng for YAML
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yml = "0.0.12"
+serde_yaml_ng = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 walkdir = "2"
 regex = "1"
@@ -30,7 +30,6 @@ toml = "0.8"
 thiserror = "2"
 anyhow = "1"
 sha2 = "0.10"
-backoff = { version = "0.4", features = ["tokio"] }
 futures = "0.3"
 
 [dev-dependencies]

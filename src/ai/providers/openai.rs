@@ -1,6 +1,9 @@
+use std::time::Duration;
 use anyhow::Result;
 use crate::ai::provider::LlmProvider;
 use crate::ai::embedder::Embedder;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -12,7 +15,10 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(api_key: String, base_url: String, model: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             api_key,
             base_url,
             model,
@@ -61,7 +67,10 @@ pub struct OpenAiEmbedder {
 impl OpenAiEmbedder {
     pub fn new(api_key: String, base_url: String, model: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             api_key,
             base_url,
             model,
