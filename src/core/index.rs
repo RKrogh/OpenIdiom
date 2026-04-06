@@ -65,7 +65,13 @@ pub fn index_vault(
             continue;
         }
 
-        let content = std::fs::read_to_string(path)?;
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Warning: skipping {}: {e}", path.display());
+                continue;
+            }
+        };
         let hash = compute_hash(&content);
         let rel_path = path.strip_prefix(&vault.root).unwrap_or(path);
 
@@ -90,7 +96,13 @@ pub fn index_vault(
             stats.new_notes += 1;
         }
 
-        let parsed = parser::parse_note(&content, rel_path)?;
+        let parsed = match parser::parse_note(&content, rel_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Warning: skipping {}: {e}", rel_path.display());
+                continue;
+            }
+        };
         // Register both the frontmatter title and filename stem for resolution.
         // Wikilinks typically use the filename: [[api-design]], not [[API Design Patterns]].
         resolver.register(&parsed.title, rel_path);

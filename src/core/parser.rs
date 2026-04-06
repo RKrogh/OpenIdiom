@@ -28,8 +28,6 @@ pub struct Heading {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParserError {
-    #[error("Failed to parse frontmatter: {0}")]
-    Frontmatter(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -83,12 +81,15 @@ fn extract_frontmatter(content: &str) -> Result<(Option<serde_json::Value>, Stri
                 return Ok((None, body));
             }
 
-            // Parse YAML to serde_yaml_ng::Value, then convert to serde_json::Value
-            let yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml_str)
-                .map_err(|e| ParserError::Frontmatter(e.to_string()))?;
-            let json_value = yaml_to_json(yaml_value);
-
-            Ok((Some(json_value), body))
+            // Parse YAML to serde_yaml_ng::Value, then convert to serde_json::Value.
+            // If YAML is malformed, treat as no frontmatter rather than failing the whole note.
+            match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml_str) {
+                Ok(yaml_value) => Ok((Some(yaml_to_json(yaml_value)), body)),
+                Err(e) => {
+                    eprintln!("Warning: invalid frontmatter, indexing without it: {e}");
+                    Ok((None, body))
+                }
+            }
         }
     }
 }
