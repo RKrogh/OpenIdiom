@@ -12,7 +12,7 @@ mod parser;
 extern crate pulldown_cmark;
 extern crate regex;
 extern crate serde_json;
-extern crate serde_yml;
+extern crate serde_yaml_ng;
 extern crate thiserror;
 
 #[test]

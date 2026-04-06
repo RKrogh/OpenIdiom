@@ -268,7 +268,7 @@ fn test_check_finds_orphans() {
 fn test_check_finds_ambiguous_links() {
     let dir = setup_indexed_vault();
     // ambiguous-note.md exists in both root and subfolder/
-    oi().args(["check", "--ambiguous-links"])
+    let _ = oi().args(["check", "--ambiguous-links"])
         .current_dir(dir.path())
         .assert();
     // May or may not find issues depending on whether any note links to ambiguous-note
