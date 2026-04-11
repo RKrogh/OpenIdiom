@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::Path;
 
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -18,6 +17,8 @@ pub enum IndexError {
     Db(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Ignore rules error: {0}")]
+    Ignore(#[from] crate::core::ignore::IgnoreError),
 }
 
 #[derive(Debug, Default)]
@@ -51,12 +52,15 @@ pub fn index_vault(
     let mut stats = IndexStats::default();
     let mut resolver = LinkResolver::new();
 
-    let ignore = &vault.config.vault.ignore;
+    let rules = crate::core::ignore::IgnoreRules::load(&vault.root, &vault.config.vault.ignore)?;
 
     // First pass: parse all notes, insert into DB, register with resolver
     for entry in WalkDir::new(&vault.root)
         .into_iter()
-        .filter_entry(|e| !should_ignore(e.path(), &vault.root, ignore))
+        .filter_entry(|e| {
+            let rel = e.path().strip_prefix(&vault.root).unwrap_or(e.path());
+            !rules.is_ignored(rel)
+        })
     {
         let entry = entry.map_err(std::io::Error::other)?;
         let path = entry.path();
@@ -139,19 +143,6 @@ pub fn index_vault(
     stats.total_tags = db::queries::count_unique_tags(conn)?;
 
     Ok(stats)
-}
-
-fn should_ignore(path: &Path, root: &Path, ignore: &[String]) -> bool {
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    for component in rel.components() {
-        let name = component.as_os_str().to_string_lossy();
-        for pattern in ignore {
-            if name == *pattern {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn compute_hash(content: &str) -> String {

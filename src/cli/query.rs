@@ -41,8 +41,8 @@ pub struct QueryArgs {
     paths: bool,
 }
 
-pub fn run(args: QueryArgs) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&std::path::Path>, args: QueryArgs) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
 
     let mut filters = Vec::new();

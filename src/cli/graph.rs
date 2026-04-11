@@ -42,8 +42,8 @@ struct GraphEdge {
     line: Option<i64>,
 }
 
-pub fn run(args: GraphArgs) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&std::path::Path>, args: GraphArgs) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
 
     let graph = build_graph(&conn, &args)?;

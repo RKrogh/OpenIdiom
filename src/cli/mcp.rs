@@ -16,14 +16,14 @@ pub enum McpCommand {
     Serve,
 }
 
-pub fn run(args: McpArgs) -> anyhow::Result<ExitCode> {
+pub fn run(vault_path: Option<&std::path::Path>, args: McpArgs) -> anyhow::Result<ExitCode> {
     match args.command {
-        McpCommand::Serve => run_server(),
+        McpCommand::Serve => run_server(vault_path),
     }
 }
 
-fn run_server() -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+fn run_server(vault_path: Option<&std::path::Path>) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
 
     let stdin = std::io::stdin();

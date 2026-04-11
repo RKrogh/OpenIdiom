@@ -149,19 +149,39 @@ impl Vault {
         loop {
             let candidate = current.join(VAULT_DIR);
             if candidate.is_dir() {
-                let config_path = candidate.join(CONFIG_FILE);
-                let config_str = std::fs::read_to_string(&config_path)?;
-                let config: VaultConfig = toml::from_str(&config_str)?;
-                config.validate()?;
-                let db_path = candidate.join(DB_FILE);
-                return Ok(Vault {
-                    root: current,
-                    config,
-                    db_path,
-                });
+                return Self::open(&current);
             }
             if !current.pop() {
                 return Err(VaultError::NotFound);
+            }
+        }
+    }
+
+    /// Open a vault at a known path (no discovery walk)
+    pub fn open(root: &Path) -> Result<Vault, VaultError> {
+        let vault_dir = root.join(VAULT_DIR);
+        if !vault_dir.is_dir() {
+            return Err(VaultError::NotFound);
+        }
+        let config_path = vault_dir.join(CONFIG_FILE);
+        let config_str = std::fs::read_to_string(&config_path)?;
+        let config: VaultConfig = toml::from_str(&config_str)?;
+        config.validate()?;
+        let db_path = vault_dir.join(DB_FILE);
+        Ok(Vault {
+            root: root.to_path_buf(),
+            config,
+            db_path,
+        })
+    }
+
+    /// Resolve vault: use explicit path if given, otherwise discover from CWD
+    pub fn resolve(vault_path: Option<&Path>) -> Result<Vault, VaultError> {
+        match vault_path {
+            Some(path) => Self::open(path),
+            None => {
+                let cwd = std::env::current_dir().map_err(VaultError::Io)?;
+                Self::discover(&cwd)
             }
         }
     }
@@ -204,6 +224,7 @@ pub struct VaultStatus {
     pub total_tags: usize,
     pub last_indexed: Option<String>,
     pub stale_notes: usize,
+    pub nested_vaults: Vec<String>,
 }
 
 impl fmt::Display for VaultStatus {
@@ -218,6 +239,12 @@ impl fmt::Display for VaultStatus {
         }
         if self.stale_notes > 0 {
             writeln!(f, "Stale: {} notes modified since last index", self.stale_notes)?;
+        }
+        if !self.nested_vaults.is_empty() {
+            writeln!(f, "Nested vaults: {}", self.nested_vaults.len())?;
+            for nv in &self.nested_vaults {
+                writeln!(f, "  - {nv}")?;
+            }
         }
         Ok(())
     }
@@ -241,6 +268,8 @@ pub fn vault_status(conn: &Connection, vault: &Vault) -> Result<VaultStatus, Vau
     // For now, we report 0 — full implementation compares file mtimes
     let stale_notes = 0;
 
+    let nested_vaults = find_nested_vaults(&vault.root);
+
     Ok(VaultStatus {
         name: vault.config.vault.name.clone(),
         root: vault.root.display().to_string(),
@@ -249,5 +278,44 @@ pub fn vault_status(conn: &Connection, vault: &Vault) -> Result<VaultStatus, Vau
         total_tags,
         last_indexed,
         stale_notes,
+        nested_vaults,
     })
+}
+
+/// Scan for nested vaults (subdirectories containing .openidiom/).
+/// Skips the vault's own .openidiom directory.
+fn find_nested_vaults(root: &Path) -> Vec<String> {
+    use walkdir::WalkDir;
+
+    let own_vault_dir = root.join(VAULT_DIR);
+    let mut nested = Vec::new();
+
+    for entry in WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            // Skip the vault's own .openidiom dir and common large dirs
+            let path = e.path();
+            if path == own_vault_dir {
+                return false;
+            }
+            let name = e.file_name().to_string_lossy();
+            // Skip dirs that are never vaults and would slow the walk
+            !matches!(name.as_ref(), ".git" | "node_modules" | "target" | ".next" | "bin" | "obj")
+        })
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.file_type().is_dir() && entry.file_name() == VAULT_DIR {
+            // The parent of this .openidiom dir is the nested vault root
+            if let Some(parent) = entry.path().parent() {
+                let rel = parent.strip_prefix(root).unwrap_or(parent);
+                nested.push(rel.display().to_string());
+            }
+        }
+    }
+
+    nested
 }

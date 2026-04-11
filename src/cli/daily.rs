@@ -15,8 +15,8 @@ pub struct DailyArgs {
     template: Option<String>,
 }
 
-pub fn run(args: DailyArgs) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&std::path::Path>, args: DailyArgs) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
 
     let date = if let Some(ref date_str) = args.date {
         chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d")

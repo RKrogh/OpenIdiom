@@ -58,23 +58,25 @@ pub enum AiCommand {
     Setup,
 }
 
-pub fn run(args: AiArgs) -> anyhow::Result<ExitCode> {
+pub fn run(vault_path: Option<&std::path::Path>, args: AiArgs) -> anyhow::Result<ExitCode> {
     // Build a tokio runtime for async AI calls
     let rt = tokio::runtime::Runtime::new()?;
 
+    // Resolve vault once, pass to subcommands
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
+
     match args.command {
-        AiCommand::Index { force, yes, dry_run } => rt.block_on(run_index(force, yes, dry_run)),
-        AiCommand::Search { query } => rt.block_on(run_search(&query)),
-        AiCommand::Ask { question, no_stream: _ } => rt.block_on(run_ask(&question)),
-        AiCommand::Connect { note, no_stream: _ } => rt.block_on(run_connect(&note)),
-        AiCommand::Summarize { tag, no_stream: _ } => rt.block_on(run_summarize(tag.as_deref())),
-        AiCommand::Metrics => run_metrics(),
-        AiCommand::Setup => rt.block_on(run_setup()),
+        AiCommand::Index { force, yes, dry_run } => rt.block_on(run_index(&vault, force, yes, dry_run)),
+        AiCommand::Search { query } => rt.block_on(run_search(&vault, &query)),
+        AiCommand::Ask { question, no_stream: _ } => rt.block_on(run_ask(&vault, &question)),
+        AiCommand::Connect { note, no_stream: _ } => rt.block_on(run_connect(&vault, &note)),
+        AiCommand::Summarize { tag, no_stream: _ } => rt.block_on(run_summarize(&vault, tag.as_deref())),
+        AiCommand::Metrics => run_metrics(&vault),
+        AiCommand::Setup => rt.block_on(run_setup(&vault)),
     }
 }
 
-async fn run_index(force: bool, yes: bool, dry_run: bool) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_index(vault: &crate::core::vault::Vault, force: bool, yes: bool, dry_run: bool) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
     ensure_metrics_table(&conn)?;
 
@@ -96,8 +98,7 @@ async fn run_index(force: bool, yes: bool, dry_run: bool) -> anyhow::Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_search(query: &str) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_search(vault: &crate::core::vault::Vault, query: &str) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
 
     // Check if embeddings exist
@@ -127,8 +128,7 @@ async fn run_search(query: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_ask(question: &str) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_ask(vault: &crate::core::vault::Vault, question: &str) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
     ensure_metrics_table(&conn)?;
 
@@ -145,8 +145,7 @@ async fn run_ask(question: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_connect(note: &str) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_connect(vault: &crate::core::vault::Vault, note: &str) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
     ensure_metrics_table(&conn)?;
 
@@ -159,8 +158,7 @@ async fn run_connect(note: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_summarize(tag: Option<&str>) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_summarize(vault: &crate::core::vault::Vault, tag: Option<&str>) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
     ensure_metrics_table(&conn)?;
 
@@ -172,8 +170,7 @@ async fn run_summarize(tag: Option<&str>) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_metrics() -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+fn run_metrics(vault: &crate::core::vault::Vault) -> anyhow::Result<ExitCode> {
     let conn = vault.open_db()?;
 
     crate::ai::cost::print_metrics(&conn)?;
@@ -181,8 +178,7 @@ fn run_metrics() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_setup() -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+async fn run_setup(vault: &crate::core::vault::Vault) -> anyhow::Result<ExitCode> {
     let ai = &vault.config.ai;
     let ollama_url = ai.ollama_url.as_deref().unwrap_or("http://localhost:11434");
 
