@@ -81,7 +81,10 @@ pub fn create_provider(config: &AiSection) -> Result<AnyProvider> {
         "claude" => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| anyhow::anyhow!(
-                    "ANTHROPIC_API_KEY not set. Required for provider 'claude'."
+                    "ANTHROPIC_API_KEY not set.\n\n\
+                     The LLM provider is set to 'claude', which requires this env var.\n\
+                     Set it:  export ANTHROPIC_API_KEY=sk-ant-...\n\n\
+                     Run `oi ai setup` to check your full AI configuration."
                 ))?;
             let model = config.model.clone()
                 .unwrap_or_else(|| "claude-sonnet-4-6".into());
@@ -90,7 +93,10 @@ pub fn create_provider(config: &AiSection) -> Result<AnyProvider> {
         "openai" => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .map_err(|_| anyhow::anyhow!(
-                    "OPENAI_API_KEY not set. Required for provider 'openai'."
+                    "OPENAI_API_KEY not set.\n\n\
+                     The LLM provider is set to 'openai', which requires this env var.\n\
+                     Set it:  export OPENAI_API_KEY=sk-...\n\n\
+                     Run `oi ai setup` to check your full AI configuration."
                 ))?;
             let base_url = config.base_url.clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into());
@@ -114,7 +120,14 @@ pub fn create_embedder(config: &AiSection) -> Result<AnyEmbedder> {
         "openai" => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .map_err(|_| anyhow::anyhow!(
-                    "OPENAI_API_KEY not set. Required for embedding provider 'openai'."
+                    "OPENAI_API_KEY not set.\n\n\
+                     Embeddings require a separate provider from the LLM. Your config uses\n\
+                     'openai' for embeddings (Claude does not offer an embedding API).\n\n\
+                     Options:\n\
+                     1. Set the key:  export OPENAI_API_KEY=sk-...\n\
+                     2. Switch to free local embeddings with Ollama:\n\
+                        Set embedding_provider = \"ollama\" in .openidiom/config.toml\n\n\
+                     Run `oi ai setup` for a full diagnostic."
                 ))?;
             let base_url = config.base_url.clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into());

@@ -123,8 +123,8 @@ impl VaultConfig {
             ai: AiSection {
                 provider: "claude".into(),
                 model: None,
-                embedding_provider: "openai".into(),
-                embedding_model: "text-embedding-3-small".into(),
+                embedding_provider: "ollama".into(),
+                embedding_model: "nomic-embed-text".into(),
                 base_url: None,
                 ollama_url: None,
                 chunk_size: default_chunk_size(),

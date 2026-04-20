@@ -266,8 +266,8 @@ ignore = [".openidiom", ".git", "node_modules", ".obsidian"]
 [ai]
 provider = "claude"              # claude | openai | ollama
 # model = "claude-sonnet-4-6"   # LLM for completions
-embedding_provider = "openai"    # openai | ollama
-embedding_model = "text-embedding-3-small"
+embedding_provider = "ollama"    # ollama | openai
+embedding_model = "nomic-embed-text"
 # base_url = "..."              # For OpenAI-compatible APIs
 # ollama_url = "http://localhost:11434"
 chunk_size = 500                 # Tokens per embedding chunk

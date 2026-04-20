@@ -54,6 +54,8 @@ pub enum AiCommand {
     },
     /// Show AI usage metrics
     Metrics,
+    /// Check AI configuration and diagnose issues
+    Setup,
 }
 
 pub fn run(args: AiArgs) -> anyhow::Result<ExitCode> {
@@ -67,6 +69,7 @@ pub fn run(args: AiArgs) -> anyhow::Result<ExitCode> {
         AiCommand::Connect { note, no_stream: _ } => rt.block_on(run_connect(&note)),
         AiCommand::Summarize { tag, no_stream: _ } => rt.block_on(run_summarize(tag.as_deref())),
         AiCommand::Metrics => run_metrics(),
+        AiCommand::Setup => run_setup(),
     }
 }
 
@@ -174,6 +177,124 @@ fn run_metrics() -> anyhow::Result<ExitCode> {
     crate::ai::cost::print_metrics(&conn)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_setup() -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+    let ai = &vault.config.ai;
+
+    println!("AI Configuration (.openidiom/config.toml)");
+    println!("==========================================\n");
+
+    // LLM provider
+    println!("LLM provider:       {}", ai.provider);
+    if let Some(ref model) = ai.model {
+        println!("  model:            {model}");
+    }
+    let provider_ok = check_provider_ready(&ai.provider);
+
+    // Embedding provider
+    println!("\nEmbedding provider: {}", ai.embedding_provider);
+    println!("  model:            {}", ai.embedding_model);
+    let embedder_ok = check_embedder_ready(&ai.embedding_provider, ai.ollama_url.as_deref());
+
+    // Summary
+    println!();
+    if provider_ok && embedder_ok {
+        println!("All good. Your AI configuration is ready to use.");
+    } else {
+        println!("Issues found:\n");
+        if !provider_ok {
+            print_provider_fix(&ai.provider);
+        }
+        if !embedder_ok {
+            print_embedder_fix(&ai.embedding_provider, &ai.provider);
+        }
+        println!("\nConfig file: {}/.openidiom/config.toml", vault.root.display());
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Check if the LLM provider is ready, printing status.
+fn check_provider_ready(provider: &str) -> bool {
+    match provider {
+        "claude" => {
+            let ok = std::env::var("ANTHROPIC_API_KEY").is_ok();
+            println!("  ANTHROPIC_API_KEY: {}", if ok { "set" } else { "MISSING" });
+            ok
+        }
+        "openai" => {
+            let ok = std::env::var("OPENAI_API_KEY").is_ok();
+            println!("  OPENAI_API_KEY:   {}", if ok { "set" } else { "MISSING" });
+            ok
+        }
+        "ollama" => {
+            println!("  (no API key needed)");
+            true
+        }
+        _ => {
+            println!("  unknown provider");
+            false
+        }
+    }
+}
+
+/// Check if the embedding provider is ready, printing status.
+fn check_embedder_ready(provider: &str, ollama_url: Option<&str>) -> bool {
+    match provider {
+        "openai" => {
+            let ok = std::env::var("OPENAI_API_KEY").is_ok();
+            println!("  OPENAI_API_KEY:   {}", if ok { "set" } else { "MISSING" });
+            ok
+        }
+        "ollama" => {
+            let url = ollama_url.unwrap_or("http://localhost:11434");
+            println!("  url:              {url}");
+            println!("  (no API key needed)");
+            true
+        }
+        _ => {
+            println!("  unknown provider");
+            false
+        }
+    }
+}
+
+fn print_provider_fix(provider: &str) {
+    match provider {
+        "claude" => {
+            println!("  LLM: ANTHROPIC_API_KEY is not set.");
+            println!("    export ANTHROPIC_API_KEY=sk-ant-...");
+            println!("    Or switch to ollama (free, local): set provider = \"ollama\" in config");
+        }
+        "openai" => {
+            println!("  LLM: OPENAI_API_KEY is not set.");
+            println!("    export OPENAI_API_KEY=sk-...");
+            println!("    Or switch to ollama (free, local): set provider = \"ollama\" in config");
+        }
+        _ => {}
+    }
+}
+
+fn print_embedder_fix(embedding_provider: &str, llm_provider: &str) {
+    match embedding_provider {
+        "openai" => {
+            println!("  Embeddings: OPENAI_API_KEY is not set.");
+            if llm_provider != "openai" {
+                println!("    Note: embeddings need a separate provider from the LLM.");
+                println!("    Even with provider = \"{llm_provider}\", embeddings still need their own key.");
+            }
+            println!();
+            println!("    Option 1: export OPENAI_API_KEY=sk-...");
+            println!("    Option 2: switch to Ollama for free local embeddings:");
+            println!("      In .openidiom/config.toml, set:");
+            println!("        embedding_provider = \"ollama\"");
+            println!("        embedding_model = \"nomic-embed-text\"");
+            println!("      Then run: ollama pull nomic-embed-text");
+        }
+        _ => {}
+    }
 }
 
 fn ensure_metrics_table(conn: &rusqlite::Connection) -> anyhow::Result<()> {
