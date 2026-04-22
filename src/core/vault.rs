@@ -121,7 +121,7 @@ impl VaultConfig {
                 ],
             },
             ai: AiSection {
-                provider: "claude".into(),
+                provider: "ollama".into(),
                 model: None,
                 embedding_provider: "ollama".into(),
                 embedding_model: "nomic-embed-text".into(),

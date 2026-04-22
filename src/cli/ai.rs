@@ -69,7 +69,7 @@ pub fn run(args: AiArgs) -> anyhow::Result<ExitCode> {
         AiCommand::Connect { note, no_stream: _ } => rt.block_on(run_connect(&note)),
         AiCommand::Summarize { tag, no_stream: _ } => rt.block_on(run_summarize(tag.as_deref())),
         AiCommand::Metrics => run_metrics(),
-        AiCommand::Setup => run_setup(),
+        AiCommand::Setup => rt.block_on(run_setup()),
     }
 }
 
@@ -117,8 +117,10 @@ async fn run_search(query: &str) -> anyhow::Result<ExitCode> {
     if results.is_empty() {
         println!("No results");
     } else {
+        println!("{:<7} {}", "Score", "Path");
+        println!("{:<7} {}", "-----", "----");
         for (path, score) in &results {
-            println!("{score:.3}  {path}");
+            println!("{score:<7.3} {path}");
         }
     }
 
@@ -179,24 +181,38 @@ fn run_metrics() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_setup() -> anyhow::Result<ExitCode> {
+async fn run_setup() -> anyhow::Result<ExitCode> {
     let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
     let ai = &vault.config.ai;
+    let ollama_url = ai.ollama_url.as_deref().unwrap_or("http://localhost:11434");
 
     println!("AI Configuration (.openidiom/config.toml)");
     println!("==========================================\n");
+
+    // Probe Ollama once if either provider needs it
+    let needs_ollama = ai.provider == "ollama" || ai.embedding_provider == "ollama";
+    let ollama_status = if needs_ollama {
+        probe_ollama(ollama_url).await
+    } else {
+        OllamaStatus::NotNeeded
+    };
 
     // LLM provider
     println!("LLM provider:       {}", ai.provider);
     if let Some(ref model) = ai.model {
         println!("  model:            {model}");
     }
-    let provider_ok = check_provider_ready(&ai.provider);
+    let provider_ok = check_provider_ready(&ai.provider, &ollama_status);
 
     // Embedding provider
     println!("\nEmbedding provider: {}", ai.embedding_provider);
     println!("  model:            {}", ai.embedding_model);
-    let embedder_ok = check_embedder_ready(&ai.embedding_provider, ai.ollama_url.as_deref());
+    let embedder_ok = check_embedder_ready(
+        &ai.embedding_provider,
+        &ai.embedding_model,
+        ollama_url,
+        &ollama_status,
+    );
 
     // Summary
     println!();
@@ -205,10 +221,10 @@ fn run_setup() -> anyhow::Result<ExitCode> {
     } else {
         println!("Issues found:\n");
         if !provider_ok {
-            print_provider_fix(&ai.provider);
+            print_provider_fix(&ai.provider, &ollama_status);
         }
         if !embedder_ok {
-            print_embedder_fix(&ai.embedding_provider, &ai.provider);
+            print_embedder_fix(&ai.embedding_provider, &ai.embedding_model, &ai.provider, &ollama_status);
         }
         println!("\nConfig file: {}/.openidiom/config.toml", vault.root.display());
     }
@@ -216,8 +232,61 @@ fn run_setup() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Check if the LLM provider is ready, printing status.
-fn check_provider_ready(provider: &str) -> bool {
+// -- Ollama probing --------------------------------------------------------
+
+enum OllamaStatus {
+    /// Ollama is not used by any provider.
+    NotNeeded,
+    /// Ollama responded; contains the list of model names available.
+    Running(Vec<String>),
+    /// Could not reach Ollama.
+    Unreachable(String),
+}
+
+/// Ping Ollama's `/api/tags` endpoint and return available models.
+async fn probe_ollama(base_url: &str) -> OllamaStatus {
+    let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // Response shape: { "models": [ { "name": "nomic-embed-text:latest", ... }, ... ] }
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                let models = body["models"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|m| m["name"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                OllamaStatus::Running(models)
+            } else {
+                OllamaStatus::Running(vec![])
+            }
+        }
+        Ok(resp) => OllamaStatus::Unreachable(format!("HTTP {}", resp.status())),
+        Err(e) => OllamaStatus::Unreachable(e.to_string()),
+    }
+}
+
+/// Check if a model (or its `:latest` variant) is in the list.
+fn ollama_has_model(models: &[String], wanted: &str) -> bool {
+    let wanted_lower = wanted.to_lowercase();
+    models.iter().any(|m| {
+        let m_lower = m.to_lowercase();
+        m_lower == wanted_lower
+            || m_lower == format!("{wanted_lower}:latest")
+            || m_lower.starts_with(&format!("{wanted_lower}:"))
+    })
+}
+
+// -- Provider checks -------------------------------------------------------
+
+fn check_provider_ready(provider: &str, ollama: &OllamaStatus) -> bool {
     match provider {
         "claude" => {
             let ok = std::env::var("ANTHROPIC_API_KEY").is_ok();
@@ -231,7 +300,8 @@ fn check_provider_ready(provider: &str) -> bool {
         }
         "ollama" => {
             println!("  (no API key needed)");
-            true
+            print_ollama_reachability(ollama);
+            !matches!(ollama, OllamaStatus::Unreachable(_))
         }
         _ => {
             println!("  unknown provider");
@@ -240,8 +310,12 @@ fn check_provider_ready(provider: &str) -> bool {
     }
 }
 
-/// Check if the embedding provider is ready, printing status.
-fn check_embedder_ready(provider: &str, ollama_url: Option<&str>) -> bool {
+fn check_embedder_ready(
+    provider: &str,
+    model: &str,
+    ollama_url: &str,
+    ollama: &OllamaStatus,
+) -> bool {
     match provider {
         "openai" => {
             let ok = std::env::var("OPENAI_API_KEY").is_ok();
@@ -249,10 +323,25 @@ fn check_embedder_ready(provider: &str, ollama_url: Option<&str>) -> bool {
             ok
         }
         "ollama" => {
-            let url = ollama_url.unwrap_or("http://localhost:11434");
-            println!("  url:              {url}");
+            println!("  url:              {ollama_url}");
             println!("  (no API key needed)");
-            true
+            match ollama {
+                OllamaStatus::Running(models) => {
+                    if ollama_has_model(models, model) {
+                        println!("  model status:     installed");
+                        true
+                    } else {
+                        println!("  model status:     NOT FOUND");
+                        println!("    Run: ollama pull {model}");
+                        false
+                    }
+                }
+                OllamaStatus::Unreachable(_) => {
+                    print_ollama_reachability(ollama);
+                    false
+                }
+                OllamaStatus::NotNeeded => true,
+            }
         }
         _ => {
             println!("  unknown provider");
@@ -261,7 +350,19 @@ fn check_embedder_ready(provider: &str, ollama_url: Option<&str>) -> bool {
     }
 }
 
-fn print_provider_fix(provider: &str) {
+fn print_ollama_reachability(ollama: &OllamaStatus) {
+    match ollama {
+        OllamaStatus::Running(_) => println!("  ollama:           reachable"),
+        OllamaStatus::Unreachable(reason) => {
+            println!("  ollama:           NOT REACHABLE ({reason})");
+        }
+        OllamaStatus::NotNeeded => {}
+    }
+}
+
+// -- Fix suggestions -------------------------------------------------------
+
+fn print_provider_fix(provider: &str, ollama: &OllamaStatus) {
     match provider {
         "claude" => {
             println!("  LLM: ANTHROPIC_API_KEY is not set.");
@@ -273,11 +374,21 @@ fn print_provider_fix(provider: &str) {
             println!("    export OPENAI_API_KEY=sk-...");
             println!("    Or switch to ollama (free, local): set provider = \"ollama\" in config");
         }
+        "ollama" => {
+            if matches!(ollama, OllamaStatus::Unreachable(_)) {
+                print_ollama_install_help();
+            }
+        }
         _ => {}
     }
 }
 
-fn print_embedder_fix(embedding_provider: &str, llm_provider: &str) {
+fn print_embedder_fix(
+    embedding_provider: &str,
+    embedding_model: &str,
+    llm_provider: &str,
+    ollama: &OllamaStatus,
+) {
     match embedding_provider {
         "openai" => {
             println!("  Embeddings: OPENAI_API_KEY is not set.");
@@ -293,8 +404,57 @@ fn print_embedder_fix(embedding_provider: &str, llm_provider: &str) {
             println!("        embedding_model = \"nomic-embed-text\"");
             println!("      Then run: ollama pull nomic-embed-text");
         }
+        "ollama" => {
+            if matches!(ollama, OllamaStatus::Unreachable(_)) {
+                print_ollama_install_help();
+            } else if let OllamaStatus::Running(models) = ollama {
+                if !ollama_has_model(models, embedding_model) {
+                    println!("  Embedding model '{embedding_model}' is not installed in Ollama.");
+                    println!("    ollama pull {embedding_model}");
+                }
+            }
+        }
         _ => {}
     }
+}
+
+fn print_ollama_install_help() {
+    println!();
+    println!("  Ollama is not reachable. Install and start it:");
+    println!();
+    match std::env::consts::OS {
+        "linux" => {
+            println!("    curl -fsSL https://ollama.com/install.sh | sh");
+            println!("    ollama serve        # start in background, or use systemd");
+        }
+        "macos" => {
+            println!("    brew install ollama");
+            println!("    ollama serve        # or launch the Ollama app");
+        }
+        "windows" => {
+            println!("    winget install Ollama.Ollama");
+            println!("    ollama serve        # run in a terminal to start the server");
+        }
+        other => {
+            println!("    See https://ollama.com/download for {other} instructions.");
+        }
+    }
+    // Detect WSL and add a note about using Windows Ollama
+    if std::env::consts::OS == "linux" && is_wsl() {
+        println!();
+        println!("  WSL detected. If Ollama is installed on Windows instead, it should");
+        println!("  be reachable at localhost:11434 automatically. Make sure 'ollama serve'");
+        println!("  is running on the Windows side.");
+    }
+    println!();
+    println!("  After installing, pull the default embedding model:");
+    println!("    ollama pull nomic-embed-text");
+}
+
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
 }
 
 fn ensure_metrics_table(conn: &rusqlite::Connection) -> anyhow::Result<()> {
