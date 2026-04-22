@@ -52,6 +52,12 @@ oi search "authentication"
 oi query --tag backend
 oi check --broken-links
 oi graph --format dot | dot -Tsvg -o graph.svg
+
+# AI features (requires Ollama)
+oi ai setup                     # check config, get install instructions
+ollama pull nomic-embed-text    # embedding model
+oi ai index                     # embed your notes
+oi ai search "some concept"    # semantic search
 ```
 
 ---
@@ -139,16 +145,38 @@ oi search "auth" --paths | head -3 | xargs cat
 
 ## AI Providers
 
-OpenIdiom supports three AI backends. Mix and match — use one for completions, another for embeddings.
+OpenIdiom supports three AI backends. Mix and match: use one for completions, another for embeddings.
 
-### Claude (default)
+**Run `oi ai setup` at any time to check your configuration and get guided install instructions.**
+
+### Ollama (default, fully local, free)
+
+Out of the box, OpenIdiom uses [Ollama](https://ollama.com) for everything. No API keys, no accounts, no data leaves your machine.
+
+```bash
+# 1. Install Ollama
+#    Linux:   curl -fsSL https://ollama.com/install.sh | sh
+#    macOS:   brew install ollama
+#    Windows: winget install Ollama.Ollama
+
+# 2. Pull the models
+ollama pull nomic-embed-text    # embeddings (required)
+ollama pull llama3              # LLM for ask/summarize/connect (pick any model you like)
+
+# 3. That's it. Default config works.
+oi ai index
+oi ai search "some concept"
+```
+
+### Claude
+
+Better quality for RAG, summarization, and link discovery. Requires an API key. Note that Claude does not offer an embedding API, so embeddings still use Ollama or OpenAI.
 
 ```toml
-# .openidiom/config.toml
 [ai]
 provider = "claude"
-model = "claude-sonnet-4-6"
-embedding_provider = "ollama"           # Claude has no embedding API
+# model = "claude-sonnet-4-6"
+embedding_provider = "ollama"
 embedding_model = "nomic-embed-text"
 ```
 
@@ -158,31 +186,20 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ### OpenAI-Compatible
 
+Works with OpenAI, Azure OpenAI, or any compatible API.
+
 ```toml
 [ai]
 provider = "openai"
 model = "gpt-4"
 embedding_provider = "openai"
 embedding_model = "text-embedding-3-small"
-# base_url = "https://api.openai.com/v1"  # or any compatible API
+# base_url = "https://api.openai.com/v1"  # or any compatible endpoint
 ```
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 ```
-
-### Ollama (fully local, free)
-
-```toml
-[ai]
-provider = "ollama"
-model = "llama3"
-embedding_provider = "ollama"
-embedding_model = "nomic-embed-text"
-# ollama_url = "http://localhost:11434"
-```
-
-No API key needed. No data leaves your machine.
 
 ---
 
@@ -209,6 +226,69 @@ Add to your Claude Desktop config:
   }
 }
 ```
+
+---
+
+## AI Agent Integration
+
+OpenIdiom works as a knowledge layer for AI coding agents, not just for humans. If you use Claude Code, Cursor, Copilot, or similar tools, your agent can query your notes for context, prior decisions, and cross-project knowledge.
+
+The key insight: your AI agent doesn't need the LLM provider. It *is* the LLM. It only needs `oi` for search and retrieval. Embeddings run locally via Ollama, so there's nothing to configure.
+
+### How it works
+
+```bash
+# Agent uses keyword search (no AI needed)
+oi search "authentication patterns"
+
+# Agent uses semantic search (needs embeddings only, runs locally)
+oi ai search "how we handle retries in the payment service"
+
+# Agent uses structured queries
+oi query --tag architecture
+oi query --link api-design
+```
+
+The agent reads the results, synthesizes them with its own capabilities, and brings your accumulated knowledge into the current session.
+
+### Example: Claude Code global instructions
+
+Add something like this to your global `CLAUDE.md` (or equivalent for your AI tool) to make `oi` available across all projects:
+
+```markdown
+## Knowledge Base
+
+You have access to `oi`, a CLI that indexes Markdown notes as a knowledge base.
+Use it proactively when searching for context, prior decisions, or cross-project knowledge.
+
+### Quick reference
+oi search "query"          # Keyword search across the vault
+oi query --tag sometag     # Query by tags, links, frontmatter
+oi ai search "question"   # Semantic search (local embeddings)
+oi status                  # Vault overview
+oi check                   # Vault health checks
+
+The vault is initialized at ~/projects/ and indexes all project folders.
+Before searching, ensure the index is current: oi index
+```
+
+### Write knowledge, not just read it
+
+Instruct your AI agent to write notes when a session produces knowledge worth preserving. Non-obvious decisions, architecture patterns, debugging insights, cross-project connections. The bar: "would a future session benefit from finding this?"
+
+```markdown
+When a session produces reusable knowledge, write a note to ~/projects/notes/ai/:
+
+---
+title: Short descriptive title
+tags: [topic, project-name]
+date: 2026-01-15
+---
+
+Body text with [[wikilinks]] to related notes.
+```
+
+This creates a feedback loop: sessions produce knowledge that future sessions can find.
 
 ---
 
@@ -264,10 +344,10 @@ daily_format = "%Y-%m-%d"
 ignore = [".openidiom", ".git", "node_modules", ".obsidian"]
 
 [ai]
-provider = "claude"              # claude | openai | ollama
-# model = "claude-sonnet-4-6"   # LLM for completions
-embedding_provider = "openai"    # openai | ollama
-embedding_model = "text-embedding-3-small"
+provider = "ollama"              # ollama | claude | openai
+# model = "llama3"              # LLM for completions
+embedding_provider = "ollama"    # ollama | openai
+embedding_model = "nomic-embed-text"
 # base_url = "..."              # For OpenAI-compatible APIs
 # ollama_url = "http://localhost:11434"
 chunk_size = 500                 # Tokens per embedding chunk

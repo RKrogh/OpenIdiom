@@ -106,7 +106,16 @@ pub async fn embed_vault(
     // Batch embed
     if !batch_texts.is_empty() {
         let batch_size = vault.config.ai.batch_size;
+        let total_batches = (batch_texts.len() + batch_size - 1) / batch_size;
+        let mut batch_num = 0;
+
         for chunk_start in (0..batch_texts.len()).step_by(batch_size) {
+            batch_num += 1;
+            eprint!(
+                "\rEmbedding batch {batch_num}/{total_batches} ({} chunks)...  ",
+                batch_texts.len()
+            );
+
             let chunk_end = (chunk_start + batch_size).min(batch_texts.len());
             let batch = &batch_texts[chunk_start..chunk_end];
 
@@ -136,6 +145,10 @@ pub async fn embed_vault(
                 stats.total_chunks += 1;
             }
         }
+    }
+
+    if !batch_texts.is_empty() {
+        eprint!("\r{}\r", " ".repeat(60)); // clear progress line
     }
 
     // Store usage metrics
