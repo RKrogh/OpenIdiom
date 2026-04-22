@@ -33,8 +33,8 @@ struct CheckIssue {
     line: Option<i64>,
 }
 
-pub fn run(args: CheckArgs) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&std::path::Path>, args: CheckArgs) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
 
     let run_all = !args.broken_links && !args.orphans && !args.ambiguous_links && !args.dead_tags;

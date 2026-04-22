@@ -27,8 +27,8 @@ struct SearchResult {
     rank: f64,
 }
 
-pub fn run(args: SearchArgs) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&std::path::Path>, args: SearchArgs) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
 
     let results = crate::db::queries::search_fts(&conn, &args.query, args.limit)?;

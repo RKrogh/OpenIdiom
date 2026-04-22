@@ -11,11 +11,16 @@ mod completions;
 pub mod mcp;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "oi", about = "OpenIdiom — headless knowledge base CLI")]
 pub struct Cli {
+    /// Path to vault root (overrides auto-discovery from CWD)
+    #[arg(long, global = true)]
+    pub vault: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -58,17 +63,18 @@ pub enum Command {
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    let vault_path = cli.vault.as_deref();
     match cli.command {
-        Command::Init => init::run(),
-        Command::Index { force, stats } => index::run(force, stats),
-        Command::Status { json } => status::run(json),
-        Command::Query(args) => query::run(args),
-        Command::Search(args) => search::run(args),
-        Command::Check(args) => check::run(args),
-        Command::Graph(args) => graph::run(args),
-        Command::Daily(args) => daily::run(args),
-        Command::Ai(args) => ai::run(args),
+        Command::Init => init::run(vault_path),
+        Command::Index { force, stats } => index::run(vault_path, force, stats),
+        Command::Status { json } => status::run(vault_path, json),
+        Command::Query(args) => query::run(vault_path, args),
+        Command::Search(args) => search::run(vault_path, args),
+        Command::Check(args) => check::run(vault_path, args),
+        Command::Graph(args) => graph::run(vault_path, args),
+        Command::Daily(args) => daily::run(vault_path, args),
+        Command::Ai(args) => ai::run(vault_path, args),
         Command::Completions(args) => completions::run(args),
-        Command::Mcp(args) => mcp::run(args),
+        Command::Mcp(args) => mcp::run(vault_path, args),
     }
 }

@@ -1,7 +1,8 @@
+use std::path::Path;
 use std::process::ExitCode;
 
-pub fn run(json: bool) -> anyhow::Result<ExitCode> {
-    let vault = crate::core::vault::Vault::discover(&std::env::current_dir()?)?;
+pub fn run(vault_path: Option<&Path>, json: bool) -> anyhow::Result<ExitCode> {
+    let vault = crate::core::vault::Vault::resolve(vault_path)?;
     let conn = vault.open_db()?;
     let status = crate::core::vault::vault_status(&conn, &vault)?;
 
