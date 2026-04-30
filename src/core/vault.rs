@@ -36,6 +36,9 @@ pub struct VaultSection {
     pub daily_folder: String,
     pub daily_format: String,
     pub ignore: Vec<String>,
+    /// Projects that must not have notes written about them (NDA/sensitivity guard)
+    #[serde(default)]
+    pub sensitive_projects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -119,6 +122,7 @@ impl VaultConfig {
                     "node_modules".into(),
                     ".obsidian".into(),
                 ],
+                sensitive_projects: vec![],
             },
             ai: AiSection {
                 provider: "ollama".into(),

@@ -148,3 +148,30 @@ pub fn search_fts(
 
     rows.collect()
 }
+
+/// Search with snippets for AI/MCP consumers. Returns (path, title, snippet, rank).
+pub fn search_fts_with_snippets(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, String, f64)>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT n.path, n.title, snippet(notes_fts, 1, '>>>', '<<<', '...', 40), rank
+         FROM notes_fts f
+         JOIN notes n ON n.id = f.rowid
+         WHERE notes_fts MATCH ?1
+         ORDER BY rank
+         LIMIT ?2"
+    )?;
+
+    let rows = stmt.query_map(rusqlite::params![query, limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+
+    rows.collect()
+}
